@@ -77,4 +77,8 @@ export const api = {
   deepMutate: (sequence, position, base) => post('/deep/mutate', { sequence, position, base }),
   deepJob: (id) => get(`/deep/jobs/${id}`),
   deepCancel: (id) => del(`/deep/jobs/${id}`),
+  // 本地 3D 建模（内置简化建模 / 外部引擎钩子），异步任务
+  model3d: (sequence, structure) => post('/3d/predict', structure ? { sequence, structure } : { sequence }),
+  model3dJob: (id) => get(`/3d/jobs/${id}`),
+  model3dCancel: (id) => del(`/3d/jobs/${id}`),
 }

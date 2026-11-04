@@ -14,6 +14,14 @@ const error = ref('')
 const selectedPdb = ref('')
 const copied = ref(false)
 const controller = ref(null)
+// 本地 3D 建模（内置简化建模 / 外部引擎钩子）
+const localModel = ref(null)
+const localJobId = ref('')
+const localStage = ref('')
+const localError = ref('')
+const building = ref(false)
+const localTimer = ref(null)
+const localToken = ref(0)
 
 const normalized = computed(() => normalizeSequence(sequence.value))
 
@@ -59,6 +67,7 @@ const viewerUrl = computed(() => {
 
 onUnmounted(() => {
   if (controller.value) controller.value.abort()
+  cancelLocal()
 })
 
 function pickSimilar(item) {
@@ -94,9 +103,77 @@ async function copyBridge() {
   setTimeout(() => { copied.value = false }, 2000)
 }
 
+function cancelLocal() {
+  if (localTimer.value) {
+    clearTimeout(localTimer.value)
+    localTimer.value = null
+  }
+  const id = localJobId.value
+  localJobId.value = ''
+  building.value = false
+  localToken.value += 1
+  if (id) api.model3dCancel(id).catch(() => {})
+}
+
+async function buildLocal() {
+  if (!normalized.value) return
+  cancelLocal()
+  const token = localToken.value
+  localError.value = ''
+  localModel.value = null
+  building.value = true
+  localStage.value = '提交任务…'
+  try {
+    const r = await api.model3d(normalized.value, (result.value && result.value.structure) || '')
+    if (token !== localToken.value) return
+    localJobId.value = r.job_id
+    localStage.value = '排队中…'
+    pollLocal(r.job_id, token)
+  } catch (e) {
+    if (token !== localToken.value) return
+    building.value = false
+    localError.value = e.message
+  }
+}
+
+function pollLocal(id, token) {
+  localTimer.value = setTimeout(async () => {
+    if (token !== localToken.value) return
+    try {
+      const job = await api.model3dJob(id)
+      if (token !== localToken.value) return
+      localStage.value = job.stage || job.status
+      if (job.status === 'done') {
+        localModel.value = job.result
+        localJobId.value = ''
+        localTimer.value = null
+        building.value = false
+        return
+      }
+      if (job.status === 'error' || job.status === 'cancelled') {
+        localError.value = job.error || '任务已取消'
+        localJobId.value = ''
+        localTimer.value = null
+        building.value = false
+        return
+      }
+      pollLocal(id, token)
+    } catch (e) {
+      if (token !== localToken.value) return
+      localError.value = e.message
+      localJobId.value = ''
+      localTimer.value = null
+      building.value = false
+    }
+  }, 500)
+}
+
 async function run() {
   if (!normalized.value) return
   cancel()
+  cancelLocal()
+  localModel.value = null
+  localError.value = ''
   const c = new AbortController()
   controller.value = c
   loading.value = true
@@ -132,7 +209,7 @@ function cancel() {
       <h1>三维结构查看（Mol*）</h1>
       <p class="muted">
         先比对预置结构库；未命中时用 RCSB PDB 检索序列相似度 ≥90% 的已解析实验结构；
-        仍无结果则生成 RNAComposer 输入文本，在官方网页手动预测。
+        都没有时可用下方「本地生成 3D」得到离线简化模型，或用 RNAComposer 手动预测。
       </p>
       <textarea v-model="sequence" placeholder="输入 RNA 序列，或点击下方实例…"></textarea>
       <div style="margin-top: 10px; display: flex; gap: 10px;">
@@ -151,6 +228,32 @@ function cancel() {
         </div>
       </div>
       <p class="hint">仅含已解析 PDB 的条目可在线 3D 查看；示例坐标为本地收录，断网也能渲染。</p>
+    </div>
+
+    <div class="card">
+      <h2>本地生成 3D（离线，简化模型）</h2>
+      <p class="muted">
+        以当前预测的二级结构为约束，在本地求解粗粒度坐标（P / C4' / C1' 主链），
+        不依赖外网与第三方服务。精度低于 RNAComposer / RhoFold+，用于快速查看拓扑与相对位置。
+      </p>
+      <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+        <button :disabled="building || !normalized.length" @click="buildLocal">
+          {{ localModel ? '重新生成 3D 模型' : '生成 3D 模型' }}
+        </button>
+        <button v-if="building" class="secondary" @click="cancelLocal">取消</button>
+      </div>
+      <p v-if="building" class="hint">进度：{{ localStage || '排队中…' }}</p>
+      <p v-if="localError" class="error">{{ localError }}</p>
+      <template v-if="localModel">
+        <MolstarViewer :url="localModel.url" :height="520" />
+        <p class="hint">
+          来源：{{ localModel.engine === 'external' ? '外部 3D 引擎' : '内置简化建模' }}
+          · {{ localModel.atoms }} 个原子 · 耗时 {{ localModel.elapsed }} s
+          <template v-if="localModel.cached">（缓存命中）</template>
+          <a :href="localModel.url" target="_blank" rel="noopener noreferrer">下载 PDB</a>
+        </p>
+        <p v-if="localModel.fallback" class="hint">{{ localModel.fallback }}</p>
+      </template>
     </div>
 
     <div class="card">

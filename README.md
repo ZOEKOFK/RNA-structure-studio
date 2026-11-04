@@ -10,10 +10,11 @@
 - ✅ 阶段 2：二级结构服务（`/fold` + `/pairprob`）
 - ✅ 阶段 3：突变对比（`/mutate`，ΔMFE + 配对差异）
 - ✅ 阶段 4：`/tertiary` 预置 PDB 库命中 + RCSB PDB 序列相似度检索 + RNAComposer 手动桥接 + RoseTTAFold NA 进阶提示卡片
+- ✅ 本地 3D 建模：`/api/3d/*` 以「序列 + 二级结构」在本地生成粗粒度 PDB（内置约束松弛建模器，零依赖秒级出图；预留 `RNA_3D_CMD` 外部引擎钩子），3D 页可直接用 Mol* 预览
 - ✅ 阶段 5：Vue3 + Vite 前端五视图（首页 / 折叠 / 突变 / 深度 / 3D），折叠页 forna 交互圈图，3D 页内嵌 Mol* Viewer（本地坐标可离线）
 - ✅ 阶段 0/3（深度层）：RNA-FM 逐位置嵌入 + 突变嵌入偏移（异步任务 + 缓存；已用真实权重验证 640 维；无 torch 时自动降级为确定性特征嵌入）；突变页在出结果后自动叠加嵌入偏移
 - ✅ 阶段 1（部分）：示例库标注 Rfam 家族与共识二级结构（tRNA / 5S rRNA / 锤头核酶 / HDV 核酶 / TPP 核糖开关）
-- ✅ 自动化测试：`tests/` 覆盖折叠/配对概率/突变/深度任务/缓存淘汰/RCSB 检索/限流/本地 PDB/示例注释（57 项）；前端 `node --test` 覆盖序列规范化（5 项）；GitHub Actions 跑后端测试 + 前端测试 + 构建
+- ✅ 自动化测试：`tests/` 覆盖折叠/配对概率/突变/深度任务/缓存淘汰/RCSB 检索/限流/本地 PDB/示例注释/3D 建模（69 项）；前端 `node --test` 覆盖序列规范化（5 项）；GitHub Actions 跑后端测试 + 前端测试 + 构建
 - ✅ 单容器部署：Dockerfile 多阶段构建前端并由 FastAPI 静态托管（默认与 `INSTALL_DEEP=1` 两种镜像均已实测）
 - ✅ 演示预热：`scripts/prewarm.py` 把示例的折叠与嵌入结果预写进缓存
 - ⬜ 待办：RNAComposer 自动提交（官方无公开 REST API，仅能手动粘贴）
@@ -106,7 +107,11 @@ docker compose up -d
 | `RNA_CACHE_MAX_FILES` | `500` | 嵌入缓存文件上限（按最近读取时间 LRU 淘汰） |
 | `RNA_TERTIARY_RATE_LIMIT` | `30` | `/api/tertiary` 每 IP 每分钟请求上限；`0` 关闭 |
 | `RNA_TRUST_PROXY` | `0` | 设为 `1` 时从 `X-Forwarded-For` 取真实客户端 IP；仅在 Nginx/Caddy/负载均衡之后启用，直接暴露公网必须保持 `0` |
-| `RNA_CACHE_DIR` | `data/cache/embeddings` | 嵌入缓存目录（Docker 内为 `/app/cache`） |
+| `RNA_CACHE_DIR` | `data/cache` | 缓存根目录（嵌入与 3D 模型，Docker 内为 `/app/cache`） |
+| `RNA_3D_CACHE_DIR` | `$RNA_CACHE_DIR/models3d` | 3D 模型缓存目录（按内容哈希命名的 PDB） |
+| `RNA_MAX_3D_LEN` | `500` | 本地 3D 建模限长 |
+| `RNA_3D_TIMEOUT` | `600` | 外部 3D 引擎单任务超时（秒） |
+| `RNA_3D_CMD` | 未设置 | 外部 3D 引擎命令模板，占位符 `{seq_file}` / `{ss_file}` / `{out_pdb}` / `{workdir}`；失败自动回退内置建模 |
 | `WEB_CONCURRENCY` / `UVICORN_WORKERS` | 未设置 | 必须 ≤1：任务表/限流/检索缓存为进程内状态，多进程会在启动时报错 |
 
 ## 折叠引擎三级降级
@@ -130,6 +135,10 @@ docker compose up -d
 | POST | `/api/mutate` | `{sequence, position, base}` → ΔMFE + 配对差异 |
 | POST | `/api/tertiary` | `{sequence}` → 预置 PDB 命中 / RCSB 相似结构 / RNAComposer 输入 |
 | GET | `/api/pdb/{pdb_id}` | 本地预置的 PDB 坐标（离线 3D 查看）；未收录返回 404，非法 ID 返回 400 |
+| POST | `/api/3d/predict` | `{sequence, structure?}` → `{job_id}`（本地 3D 建模，异步；缺省结构时用 ViennaRNA 预测，≤500 nt） |
+| GET | `/api/3d/jobs/{job_id}` | 建模任务状态 / 阶段文案 / 结果（引擎、缓存命中、耗时、原子数、`fallback` 说明） |
+| DELETE | `/api/3d/jobs/{job_id}` | 取消排队中或运行中的建模任务（已结束返回 409） |
+| GET | `/api/3d/models/{model_id}` | 下载缓存的 PDB 模型（40 位内容哈希，不存在返回 404） |
 | POST | `/api/deep/embed` | `{sequence}` → `{job_id}`（逐位置嵌入，异步，≤300 nt） |
 | POST | `/api/deep/mutate` | `{sequence, position, base}` → `{job_id}`（嵌入偏移，异步） |
 | GET | `/api/deep/jobs/{job_id}` | 任务状态 / 进度 / 排队位置 / 结果（`queued → running → done / error / cancelled`） |
@@ -137,13 +146,31 @@ docker compose up -d
 
 > 序列统一支持 FASTA（忽略 `>` / `;` 描述行）；含 IUPAC 简并碱基（N/R/Y…）或非法字符时返回 400 并提示原因。
 
+## 本地 3D 建模
+
+不依赖外网与第三方服务，把「序列 + dot-bracket」当作几何约束求解粗粒度坐标：
+
+1. 环形初值：按 5.9 Å/nt 的骨架周长反推半径，嵌套越深抬升越高，避免平面塌缩；
+2. 位置约束松弛（Gauss-Seidel 式迭代）：碱基对目标 10.4 Å、相邻残基 5.9 Å、叠加极小回拉项防止漂移；
+3. 每残基输出 `P` / `C4'` / `C1'` 三原子（Mol* 的核酸骨架表示可直接识别），并写入 `REMARK SIMPLIFIED RNA MODEL`。
+
+实测 75 nt 的 tRNA：碱基对平均 10.83 Å（最大 11.51 Å）、骨架平均 5.96 Å，秒级完成。**它是教学与拓扑预览级模型**，不是物理精确的三维结构，不能替代 RNAComposer / RhoFold+ 的原子级预测。
+
+要接真实引擎时设置命令模板即可（失败自动回退内置建模，并在结果里返回 `fallback` 说明）：
+
+```powershell
+$env:RNA_3D_CMD = "simrna -s {seq_file} -o {workdir} ; convert {workdir}/model.pdb {out_pdb}"
+```
+
+模板可用占位符 `{seq_file}`（FASTA）、`{ss_file}`（dot-bracket）、`{out_pdb}`（期望输出的 PDB）、`{workdir}`（临时目录，任务结束即删除）。
+
 ## 前端功能
 
 - 首页：序列输入（FASTA 感知、自动 U 化、简并碱基与限长校验）、示例库一键「折叠 / 突变 / 深度 / 3D」
 - 折叠视图：MFE 卡片、结构统计、**forna 交互圈图**（可拖拽/缩放，失败自动回退自绘弧线图）、ECharts 配对概率热力图、Rfam 家族注释与共识结构、复制 dot-bracket、下载 JSON 结果、示例快速切换
 - 突变对比：位点滑杆、参考碱基提示、ΔMFE 稳定性趋势（↑/↓）、野生型/突变型双结构图、断裂/新增碱基对；出结果后**自动运行 RNA-FM 嵌入偏移**（可取消，展示平均/突变位点/最大位移与前 5 位点）
 - 深度分析：逐位置嵌入（PCA 轨迹 + 嵌入强度曲线）、突变嵌入偏移条形图（标注突变位）、WT/MT 嵌入空间对比；异步轮询进度条、排队位置提示、任务取消、结果导出 JSON
-- 3D 视图：命中预置 PDB → 直接**内嵌 Mol* Viewer**（坐标优先读本地 `/api/pdb/{id}`，断网可用）；未命中 → RCSB PDB 按序列相似度（≥90%）列出已解析实验结构，点击任意一条切换 3D 视图；同时生成 RNAComposer 输入（任务名 / 序列 / dot-bracket），可一键复制并跳转官网手动预测；另附 RoseTTAFold NA 进阶说明卡片
+- 3D 视图：命中预置 PDB → 直接**内嵌 Mol* Viewer**（坐标优先读本地 `/api/pdb/{id}`，断网可用）；未命中 → RCSB PDB 按序列相似度（≥90%）列出已解析实验结构，点击任意一条切换 3D 视图；同时生成 RNAComposer 输入（任务名 / 序列 / dot-bracket），可一键复制并跳转官网手动预测；**两种来源都没有时**，可点「生成 3D 模型」用当前二级结构在本地生成粗粒度 PDB 并即时用 Mol* 预览（标注来源、原子数、耗时与缓存命中，支持取消与下载）；另附 RoseTTAFold NA 进阶说明卡片
 - 全局提示：后端不可达或 5xx 时右下角弹出错误提示（4xx 由各页面就地展示原因）
 
 ## 演示预热
@@ -184,12 +211,14 @@ rna-fold/
 │   ├── main.py            # FastAPI 接口
 │   ├── rna_fold.py        # 折叠引擎（绑定 / CLI / 纯 Python 三级）
 │   ├── rna_fm.py          # RNA-FM 深度层（真实模型 / 降级嵌入、异步任务、缓存）
+│   ├── rna3d.py           # 本地 3D 建模（内置约束松弛 + RNA_3D_CMD 外部钩子 + 缓存）
 │   ├── rcsb.py            # RCSB PDB 序列相似度检索（公开 Search API，无需 key）
 │   └── composer_api.py    # RNAComposer 手动桥接（生成可粘贴的输入文本）
 ├── data/
 │   ├── examples/examples.json
 │   ├── pdb/               # 本地 PDB 坐标（离线 3D 查看，4TNA / 1HMH / 1DRZ / 2GDI / 1EHZ）
-│   └── cache/embeddings/  # 按序列哈希缓存的嵌入向量（LRU 上限 500）
+│   ├── cache/embeddings/  # 按序列哈希缓存的嵌入向量（LRU 上限 500）
+│   └── cache/models3d/    # 按内容哈希缓存的本地 3D 模型 PDB
 ├── scripts/prewarm.py     # 演示预热：折叠 + 嵌入 + 补齐 PDB
 ├── models/rnafm/          # 可选：RNA-FM 本地权重
 ├── frontend/              # Vue3 + Vite + ECharts + forna + Mol*（test/ 为 Node 内置测试）
@@ -206,6 +235,7 @@ rna-fold/
 
 ## 后续路线
 
-- 阶段 4：RNAComposer 自动提交（官方**无公开 REST API、无 API key**，交互模式匿名可用 ≤500 nt，当前以“生成输入 → 官网手动预测”方式覆盖）
+- 阶段 4（延后）：RNAComposer 自动提交（官方**无公开 REST API、无 API key**，交互模式匿名可用 ≤500 nt；当前以「生成输入 → 官网手动预测」方式覆盖，另提供本地 3D 建模作为离线替代）
+- 可选增强：用 `RNA_3D_CMD` 接入 RhoFold+ / SimRNA 等本地引擎（注意 SimRNA 仅学术许可且禁止再分发；RhoFold+ 官方环境锁 Python 3.7 / torch 1.10，建议以独立容器或外部服务形式接入）
 - 可选增强：RCSB 检索结果缓存与自定义相似度阈值（当前固定 ≥90%、内存 LRU 100 条）
 - 可选增强：Rfam 家族注释从离线表改为在线检索（当前注释随示例库静态维护）

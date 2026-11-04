@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from . import composer_api, rcsb, rna_fold, rna_fm
+from . import composer_api, rcsb, rna3d, rna_fold, rna_fm
 
 logging.basicConfig(
     level=os.environ.get("RNA_LOG_LEVEL", "INFO").upper(),
@@ -49,6 +49,9 @@ async def lifespan(_app: FastAPI):
     cancelled = rna_fm.cancel_all()
     if cancelled:
         logger.info("服务关闭：已取消 %d 个未完成深度任务", cancelled)
+    models_cancelled = rna3d.cancel_all()
+    if models_cancelled:
+        logger.info("服务关闭：已取消 %d 个未完成 3D 建模任务", models_cancelled)
 
 
 app = FastAPI(title="RNA Structure Prediction API", version="0.1.0", lifespan=lifespan)
@@ -152,6 +155,13 @@ class DeepMutateRequest(BaseModel):
     base: str
 
 
+class Model3DRequest(BaseModel):
+    sequence: str
+    structure: Optional[str] = Field(
+        None, description="可选 dot-bracket；缺省时用 ViennaRNA 预测的结构"
+    )
+
+
 def _examples_path() -> str:
     return os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
@@ -202,6 +212,7 @@ def health():
         "max_sequence_len": rna_fold.MAX_SEQUENCE_LEN,
         "pairprob_max_len": rna_fold.BPP_MAX_LEN if rna_fold._HAS_RNA else rna_fold.BOLTZMANN_MAX_LEN,
         **rna_fm.engine_detail(),
+        **rna3d.engine_detail(),
     }
 
 
@@ -421,6 +432,69 @@ def deep_cancel(job_id: str):
         raise HTTPException(status_code=409, detail=f"任务已处于 {job['status']} 状态，无法取消")
     logger.info("深度任务已取消 job_id=%s", job_id)
     return {"job_id": job_id, "status": "cancelled"}
+
+
+# --------------------------------------------------------------------------- #
+# 本地 3D 建模（序列 + 二级结构 → 粗粒度 PDB，离线可用）
+# --------------------------------------------------------------------------- #
+@app.post("/api/3d/predict")
+def model3d(req: Model3DRequest):
+    """提交本地 3D 建模任务，立即返回 job_id（前端轮询进度）。"""
+    try:
+        seq = rna_fold.normalize_sequence(req.sequence)
+        rna_fold.validate_sequence(seq)
+        if len(seq) > rna3d.MAX_3D_LEN:
+            raise ValueError(f"本地 3D 建模限长 {rna3d.MAX_3D_LEN} nt（当前 {len(seq)} nt）")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if req.structure:
+        structure = req.structure.strip()
+        if len(structure) != len(seq):
+            raise HTTPException(status_code=400, detail="dot-bracket 长度必须与序列一致")
+        if any(ch not in ".()[]{}<>" for ch in structure):
+            raise HTTPException(status_code=400, detail="dot-bracket 只能包含 . ( ) [ ] { } < >")
+    else:
+        try:
+            structure = rna_fold.fold(seq)["structure"]
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    job_id = rna3d.submit(seq, structure)
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "structure": structure,
+        "engine": rna3d.engine_detail()["engine_3d"],
+    }
+
+
+@app.get("/api/3d/jobs/{job_id}")
+def model3d_job(job_id: str):
+    job = rna3d.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    return job
+
+
+@app.delete("/api/3d/jobs/{job_id}")
+def model3d_cancel(job_id: str):
+    """取消排队中或运行中的建模任务。"""
+    job = rna3d.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    if not rna3d.cancel_job(job_id):
+        raise HTTPException(status_code=409, detail=f"任务已处于 {job['status']} 状态，无法取消")
+    return {"job_id": job_id, "status": "cancelled"}
+
+
+@app.get("/api/3d/models/{model_id}")
+def model3d_file(model_id: str):
+    """返回缓存的模型坐标，供 Mol* 直接加载。"""
+    path = rna3d.model_path(model_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="模型不存在或已过期")
+    return FileResponse(path, media_type="chemical/x-pdb", filename=f"{model_id[:8]}.pdb")
 
 
 # --------------------------------------------------------------------------- #

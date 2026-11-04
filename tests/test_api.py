@@ -375,3 +375,174 @@ def test_examples_reload_when_file_changes(monkeypatch, tmp_path):
     os.utime(path, (time.time() + 5, time.time() + 5))
     assert len(main._load_examples()) == 2
 
+
+# --------------------------------------------------------------------------- #
+# 本地 3D 建模
+# --------------------------------------------------------------------------- #
+def _wait_job(url, timeout=30.0):
+    """轮询任务直到终态，返回最后一次响应体。"""
+    deadline = time.time() + timeout
+    job = None
+    while time.time() < deadline:
+        job = client.get(url).json()
+        if job["status"] in ("done", "error", "cancelled"):
+            return job
+        time.sleep(0.1)
+    return job
+
+
+def _atom_coords(pdb_text, atom):
+    coords = []
+    for line in pdb_text.splitlines():
+        if line.startswith("ATOM") and line[12:16].strip() == atom:
+            coords.append(
+                (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+            )
+    return coords
+
+
+def test_health_reports_3d_engine(monkeypatch):
+    from backend import rna3d
+
+    monkeypatch.setattr(rna3d, "_CMD_TEMPLATE", "")
+    data = client.get("/api/health").json()
+    assert data["engine_3d"] == "builtin"
+    assert data["model_3d_max_len"] == rna3d.MAX_3D_LEN
+    assert data["model_3d_note"]
+
+
+def test_3d_predict_builds_and_serves_model(monkeypatch, tmp_path):
+    from backend import rna3d
+
+    monkeypatch.setattr(rna3d, "_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(rna3d, "_CMD_TEMPLATE", "")
+
+    res = client.post(
+        "/api/3d/predict", json={"sequence": EXAMPLE_SEQ, "structure": "(((...)))"}
+    )
+    assert res.status_code == 200
+    submitted = res.json()
+    assert submitted["status"] == "queued"
+    assert submitted["structure"] == "(((...)))"
+    assert submitted["engine"] == "builtin"
+
+    job = _wait_job(f"/api/3d/jobs/{submitted['job_id']}")
+    assert job["status"] == "done", job.get("error")
+    result = job["result"]
+    assert result["engine"] == "builtin"
+    assert result["fallback"] is None
+    assert result["atoms"] == 3 * len(EXAMPLE_SEQ)
+    assert result["structure"] == "(((...)))"
+
+    model = client.get(result["url"])
+    assert model.status_code == 200
+    assert "ATOM" in model.text
+    assert "SIMPLIFIED RNA MODEL" in model.text
+
+
+def test_3d_predict_uses_predicted_structure_by_default(monkeypatch, tmp_path):
+    from backend import rna3d
+
+    monkeypatch.setattr(rna3d, "_CACHE_DIR", str(tmp_path))
+    res = client.post("/api/3d/predict", json={"sequence": EXAMPLE_SEQ})
+    assert res.status_code == 200
+    structure = res.json()["structure"]
+    assert len(structure) == len(EXAMPLE_SEQ)
+    assert set(structure) <= set(".()")
+
+    job = _wait_job(f"/api/3d/jobs/{res.json()['job_id']}")
+    assert job["status"] == "done", job.get("error")
+    assert job["result"]["structure"] == structure
+
+
+def test_3d_predict_reuses_cache(monkeypatch, tmp_path):
+    from backend import rna3d
+
+    monkeypatch.setattr(rna3d, "_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(rna3d, "_CMD_TEMPLATE", "")
+    body = {"sequence": EXAMPLE_SEQ, "structure": "(((...)))"}
+
+    first = _wait_job(f"/api/3d/jobs/{client.post('/api/3d/predict', json=body).json()['job_id']}")
+    second = _wait_job(f"/api/3d/jobs/{client.post('/api/3d/predict', json=body).json()['job_id']}")
+    assert first["result"]["model_id"] == second["result"]["model_id"]
+    assert second["result"]["cached"] is True
+
+
+def test_3d_predict_rejects_structure_length_mismatch(monkeypatch):
+    from backend import rna3d
+
+    monkeypatch.setattr(rna3d, "_CMD_TEMPLATE", "")
+    res = client.post("/api/3d/predict", json={"sequence": EXAMPLE_SEQ, "structure": "(())"})
+    assert res.status_code == 400
+    assert "长度" in res.json()["detail"]
+
+
+def test_3d_predict_rejects_invalid_structure_chars(monkeypatch):
+    from backend import rna3d
+
+    monkeypatch.setattr(rna3d, "_CMD_TEMPLATE", "")
+    res = client.post("/api/3d/predict", json={"sequence": EXAMPLE_SEQ, "structure": "(((" + "X" * 6})
+    assert res.status_code == 400
+    assert "dot-bracket" in res.json()["detail"]
+
+
+def test_3d_predict_rejects_oversize_sequence(monkeypatch):
+    from backend import rna3d
+
+    res = client.post("/api/3d/predict", json={"sequence": "A" * (rna3d.MAX_3D_LEN + 1)})
+    assert res.status_code == 400
+    assert "限长" in res.json()["detail"]
+
+
+def test_3d_predict_rejects_degenerate_base(monkeypatch):
+    from backend import rna3d
+
+    res = client.post("/api/3d/predict", json={"sequence": "AUGCN"})
+    assert res.status_code == 400
+    assert "简并碱基" in res.json()["detail"]
+
+
+def test_3d_job_and_model_not_found():
+    assert client.get("/api/3d/jobs/does-not-exist").status_code == 404
+    assert client.delete("/api/3d/jobs/does-not-exist").status_code == 404
+    assert client.get("/api/3d/models/does-not-exist").status_code == 404
+    # 非 sha1 形态的 ID 不落盘查找
+    assert client.get("/api/3d/models/" + "z" * 40).status_code == 404
+
+
+def test_3d_cancel_unknown_job():
+    assert client.delete("/api/3d/jobs/no-such-job").status_code == 404
+
+
+def test_3d_external_engine_falls_back_to_builtin(monkeypatch, tmp_path):
+    from backend import rna3d
+
+    monkeypatch.setattr(rna3d, "_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(rna3d, "_CMD_TEMPLATE", "definitely-not-a-command {out_pdb}")
+    monkeypatch.setattr(rna3d, "_run_external", lambda seq, ss: None)
+
+    _model_id, meta = rna3d.build_model(EXAMPLE_SEQ, "(((...)))")
+    assert meta["engine"] == "builtin"
+    assert meta["fallback"] and "回退" in meta["fallback"]
+
+
+def test_builtin_model_geometry_is_reasonable():
+    from backend import rna3d
+
+    seq, structure = "GGGAAACCC", "(((...)))"
+    pdb = rna3d.build_builtin(seq, structure)
+    coords = _atom_coords(pdb, "P")
+    assert len(coords) == len(seq), "每个残基应输出一个 P 原子"
+    assert len(_atom_coords(pdb, "C4'")) == len(seq)
+    assert len(_atom_coords(pdb, "C1'")) == len(seq)
+
+    def dist(a, b):
+        return sum((a[k] - b[k]) ** 2 for k in range(3)) ** 0.5
+
+    pairs = [(0, 8), (1, 7), (2, 6)]
+    pair_dist = sum(dist(coords[i], coords[j]) for i, j in pairs) / len(pairs)
+    assert abs(pair_dist - rna3d._PAIR_DIST) < 1.0, f"碱基对平均距离 {pair_dist:.2f} Å"
+
+    backbone = sum(dist(coords[i], coords[i + 1]) for i in range(len(seq) - 1)) / (len(seq) - 1)
+    assert abs(backbone - rna3d._BACKBONE) < 1.0, f"骨架平均间距 {backbone:.2f} Å"
+
