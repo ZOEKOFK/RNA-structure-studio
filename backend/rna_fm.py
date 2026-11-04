@@ -34,7 +34,9 @@ def _env_int(name: str, default: int) -> int:
 
 
 MAX_DEEP_LEN = _env_int("RNA_MAX_DEEP_LEN", 300)          # 深度分析限长（CPU 推理延迟控制）
-_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "cache", "embeddings")
+_CACHE_DIR = os.environ.get("RNA_CACHE_DIR") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "data", "cache", "embeddings"
+)
 _CACHE_MAX_FILES = _env_int("RNA_CACHE_MAX_FILES", 500)   # 缓存文件上限，超出按最近使用时间淘汰
 _LOCAL_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models", "rnafm")
 _HF_REPO = "multimolecule/rnafm"
@@ -46,6 +48,7 @@ _MODEL = None
 _TOKENIZER = None
 _MODEL_TRIED = False
 _MODEL_ERROR: Optional[str] = None
+_MODEL_STAGE = ""      # 当前权重加载/下载阶段，供前端展示“正在准备模型”
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=1)
 _JOB_LOCK = threading.Lock()
@@ -95,7 +98,17 @@ def engine_detail() -> dict:
         "deep_ready": _MODEL is not None,
         "deep_error": _MODEL_ERROR,
         "deep_cache_max": _CACHE_MAX_FILES,
+        "deep_note": _model_load_note(),
     }
+
+
+def _model_load_note() -> Optional[str]:
+    """未加载权重时提示首次准备代价（本地加载或在线下载）。"""
+    if _MODEL is not None or engine_status() == "fallback":
+        return None
+    if _has_local_weights(_LOCAL_MODEL_DIR):
+        return "首次深度分析将加载本地 RNA-FM 权重（约 398 MB）"
+    return "首次深度分析将从 hf-mirror 下载 RNA-FM 权重（约 398 MB），耗时取决于网络"
 
 
 def _checkpoint_path(src: str) -> str:
@@ -144,7 +157,7 @@ def _has_local_weights(path: str) -> bool:
 
 def _load_model():
     """惰性加载真实 RNA-FM；失败则返回 (None, None) 并记录原因。"""
-    global _MODEL, _TOKENIZER, _MODEL_TRIED, _MODEL_ERROR
+    global _MODEL, _TOKENIZER, _MODEL_TRIED, _MODEL_ERROR, _MODEL_STAGE
     if _MODEL_TRIED:
         return _MODEL, _TOKENIZER
     with _MODEL_LOCK:
@@ -156,6 +169,11 @@ def _load_model():
 
             os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
             src = _LOCAL_MODEL_DIR if _has_local_weights(_LOCAL_MODEL_DIR) else _HF_REPO
+            _MODEL_STAGE = (
+                "正在加载本地 RNA-FM 权重（约 398 MB）…"
+                if src == _LOCAL_MODEL_DIR
+                else "正在下载 RNA-FM 权重（约 398 MB，首次较慢）…"
+            )
             try:
                 # 官方推荐方式：multimolecule 包注册 rnafm 架构
                 import multimolecule  # noqa: F401
@@ -177,9 +195,11 @@ def _load_model():
                 model = AutoModel.from_pretrained(src, trust_remote_code=True)
             model.eval()
             _TOKENIZER, _MODEL = tok, model
+            _MODEL_STAGE = ""
         except Exception as e:  # pragma: no cover - 环境相关
             _MODEL_ERROR = f"{type(e).__name__}: {e}"
             _MODEL, _TOKENIZER = None, None
+            _MODEL_STAGE = ""
     return _MODEL, _TOKENIZER
 
 
@@ -555,7 +575,7 @@ def submit(kind: str, fn, *args) -> str:
     event = threading.Event()
     with _JOB_LOCK:
         _JOBS[job_id] = {"id": job_id, "kind": kind, "status": "queued",
-                         "progress": 0.0, "result": None, "error": None}
+                         "progress": 0.0, "stage": "", "result": None, "error": None}
         _JOB_EVENTS[job_id] = event
         _JOB_ORDER.append(job_id)
         while len(_JOB_ORDER) > _MAX_JOBS:
@@ -598,12 +618,24 @@ def cancel_job(job_id: str) -> bool:
         return True
 
 
+def cancel_all() -> int:
+    """取消所有排队中/运行中的任务（服务关闭时调用，避免优雅退出被长任务拖住）。"""
+    with _JOB_LOCK:
+        pending = [
+            jid for jid, job in _JOBS.items() if job["status"] in ("queued", "running")
+        ]
+    return sum(1 for jid in pending if cancel_job(jid))
+
+
 def get_job(job_id: str) -> Optional[dict]:
     with _JOB_LOCK:
         job = _JOBS.get(job_id)
         if not job:
             return None
         data = dict(job)
+        if data["status"] == "running" and _MODEL_STAGE:
+            # 权重加载/下载阶段无法用百分比表达，单独给出阶段文案
+            data["stage"] = _MODEL_STAGE
         if data["status"] == "queued":
             queued = [jid for jid in _JOB_ORDER
                       if _JOBS.get(jid, {}).get("status") == "queued"]

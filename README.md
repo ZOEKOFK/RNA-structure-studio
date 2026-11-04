@@ -12,8 +12,8 @@
 - ✅ 阶段 4：`/tertiary` 预置 PDB 库命中 + RCSB PDB 序列相似度检索 + RNAComposer 手动桥接
 - ✅ 阶段 5：Vue3 + Vite 前端五视图（首页 / 折叠 / 突变 / 深度 / 3D）
 - ✅ 阶段 0/3（深度层）：RNA-FM 逐位置嵌入 + 突变嵌入偏移（异步任务 + 缓存；已用真实权重验证 640 维；无 torch 时自动降级为确定性特征嵌入）
-- ✅ 自动化测试：`tests/` 覆盖折叠/配对概率/突变/深度任务/缓存淘汰/RCSB 检索/限流（48 项）
-- ✅ 单容器部署：Dockerfile 多阶段构建前端并由 FastAPI 静态托管
+- ✅ 自动化测试：`tests/` 覆盖折叠/配对概率/突变/深度任务/缓存淘汰/RCSB 检索/限流（52 项）；前端 `node --test` 覆盖序列规范化（5 项）；GitHub Actions 跑后端测试 + 前端测试 + 构建
+- ✅ 单容器部署：Dockerfile 多阶段构建前端并由 FastAPI 静态托管（默认与 `INSTALL_DEEP=1` 两种镜像均已实测）
 - ⬜ 待办：RNAComposer 自动提交（官方无公开 REST API，仅能手动粘贴）、forna/Mol* 组件化
 
 ## 快速开始
@@ -43,6 +43,8 @@ pip install -r requirements-deep.txt
 权重放到 `models/rnafm/`（`pytorch_model.bin` + `config.json`，约 398 MB，已被 `.gitignore` 排除），离线可用；缺失时才会尝试从 `hf-mirror.com` 拉取 `multimolecule/rnafm`。
 未安装 torch 时深度视图自动使用确定性特征嵌入，功能可用但非神经网络语义。深度分析限长 300 nt。
 
+首次分析若需加载/下载权重，`/api/health` 的 `deep_note` 会提前提示，任务轮询返回 `stage`（如“正在下载 RNA-FM 权重…”），前端据此展示阶段文案并把超时上限放宽到 10 分钟。
+
 > 已在本机验证：`torch 2.5.1+cpu` + `transformers 4.46.3` + `multimolecule 0.0.8`，`/api/health` 返回 `deep_engine: "rna-fm"`，9 nt 嵌入 640 维；76 nt tRNA 首次约 19 s（含模型加载），缓存命中约 0.5 s。
 > 注意不要升级到 transformers ≥ 4.56：它要求 torch ≥ 2.6 才能加载 `.bin` 检查点。
 
@@ -61,9 +63,10 @@ npm run dev
 ```powershell
 pip install -r requirements-dev.txt
 python -m pytest tests -q
+cd frontend; npm test; npm run build
 ```
 
-测试不加载真实 RNA-FM 权重、不访问网络，约 2 秒完成；前端构建可用 `npm run build` 校验。
+后端测试不加载真实 RNA-FM 权重、不访问网络，约 2–6 秒完成；前端 `npm test` 走 Node 内置测试器，无需额外依赖。
 
 ### 单容器部署（Docker）
 
@@ -71,15 +74,21 @@ python -m pytest tests -q
 # 默认：ViennaRNA + 前端，深度层使用确定性降级嵌入
 docker compose up --build -d
 
-# 启用真实 RNA-FM：构建时安装 torch（镜像更大），并挂载本地权重
+# 启用真实 RNA-FM：构建时安装 CPU 版 torch（镜像约 +200 MB），并挂载本地权重
 docker compose build --build-arg INSTALL_DEEP=1
 docker compose up -d
 ```
 
 容器内 FastAPI 同时提供 `/api/*` 与 `frontend/dist` 静态页面，访问 http://localhost:8000 即可。
-`docker-compose.yml` 已把 `./data` 与 `./models`（只读）挂载进容器，权重目录结构为 `models/rnafm/`。
 
-> 构建脚本已就绪，但开发机未运行 Docker Desktop，镜像构建尚未在本机实测；若在 Linux/WSL2 上构建报错，把日志发我即可。
+- **实测**：默认镜像构建约 30 秒（有缓存）、`INSTALL_DEEP=1` 首次构建需额外下载 CPU torch（174.7 MB）；两种镜像均已启动验证 `/api/health`、首页、`/api/fold`、`/api/tertiary`、`/api/deep/*`。
+- **非 root**：镜像内以 `app`（uid 10001）运行；`HEALTHCHECK` 内置在镜像里，`docker run` 单独部署也有健康状态。
+- **挂载**：`./data` 只读（示例库）、`./models` 只读、嵌入缓存写入命名卷 `rna-cache`（`/app/cache`），避免 bind mount 的宿主机属主问题。
+- **优雅关闭**：`stop_grace_period: 30s`，关闭时自动取消未完成的深度任务。
+- **单进程约束**：任务表、限流窗口、RCSB 缓存都在进程内存，容器固定 `--workers 1`；设置 `WEB_CONCURRENCY` / `UVICORN_WORKERS` > 1 会在启动阶段直接报错。
+- **镜像追溯**：`GIT_COMMIT=$(git rev-parse --short HEAD) docker compose build` 会把 commit 写进 OCI `LABEL`。
+
+> 示例库改动**无需重启**：后端按 `examples.json` 的 mtime 自动重载；但 `./data` 只读挂载意味着只能编辑宿主机文件，不能通过接口写入。
 
 ## 配置（环境变量）
 
@@ -94,6 +103,9 @@ docker compose up -d
 | `RNA_MAX_DEEP_LEN` | `300` | 深度分析限长 |
 | `RNA_CACHE_MAX_FILES` | `500` | 嵌入缓存文件上限（按最近读取时间 LRU 淘汰） |
 | `RNA_TERTIARY_RATE_LIMIT` | `30` | `/api/tertiary` 每 IP 每分钟请求上限；`0` 关闭 |
+| `RNA_TRUST_PROXY` | `0` | 设为 `1` 时从 `X-Forwarded-For` 取真实客户端 IP；仅在 Nginx/Caddy/负载均衡之后启用，直接暴露公网必须保持 `0` |
+| `RNA_CACHE_DIR` | `data/cache/embeddings` | 嵌入缓存目录（Docker 内为 `/app/cache`） |
+| `WEB_CONCURRENCY` / `UVICORN_WORKERS` | 未设置 | 必须 ≤1：任务表/限流/检索缓存为进程内状态，多进程会在启动时报错 |
 
 ## 折叠引擎三级降级
 
@@ -161,9 +173,10 @@ rna-fold/
 │   ├── examples/examples.json
 │   └── cache/embeddings/  # 按序列哈希缓存的嵌入向量（LRU 上限 500）
 ├── models/rnafm/          # 可选：RNA-FM 本地权重
-├── frontend/              # Vue3 + Vite + ECharts
+├── frontend/              # Vue3 + Vite + ECharts（test/ 为 Node 内置测试）
 ├── tests/                 # pytest 自动化测试
-├── Dockerfile             # 多阶段：构建前端 + apt vienna-rna 运行时
+├── .github/workflows/ci.yml  # CI：后端测试 + 前端测试 + 构建
+├── Dockerfile             # 多阶段：构建前端 + pip 安装 ViennaRNA wheel 运行时（非 root）
 ├── .dockerignore
 ├── docker-compose.yml     # 单容器（API + 静态页面），可选挂载权重
 ├── requirements.txt       # 基础依赖（必装）

@@ -10,7 +10,7 @@ import logging
 import os
 import threading
 import time
-from functools import lru_cache
+from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
@@ -25,7 +25,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger("rna.api")
 
-app = FastAPI(title="RNA Structure Prediction API", version="0.1.0")
+
+def _check_single_process() -> None:
+    """深度任务表、限流窗口与 RCSB 缓存都是进程内状态。
+
+    多进程（--workers > 1）时轮询会打到没有该任务的进程（404），限流也会按进程重复，
+    因此在启动阶段直接拒绝，而不是等到运行中才出现诡异行为。
+    """
+    workers = os.environ.get("WEB_CONCURRENCY") or os.environ.get("UVICORN_WORKERS") or ""
+    if workers.isdigit() and int(workers) > 1:
+        raise RuntimeError(
+            f"检测到多进程配置 workers={workers}：任务表/限流/检索缓存在进程内存中，"
+            "请以单进程运行（uvicorn --workers 1）。"
+        )
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    _check_single_process()
+    yield
+    cancelled = rna_fm.cancel_all()
+    if cancelled:
+        logger.info("服务关闭：已取消 %d 个未完成深度任务", cancelled)
+
+
+app = FastAPI(title="RNA Structure Prediction API", version="0.1.0", lifespan=lifespan)
 
 # 默认放开全部来源方便本地前端；生产可设 RNA_CORS_ORIGINS=http://a.com,http://b.com
 _origins = [o.strip() for o in os.environ.get("RNA_CORS_ORIGINS", "*").split(",") if o.strip()]
@@ -55,7 +79,24 @@ _RATE_LOCK = threading.Lock()
 _RATE_HITS: Dict[str, List[float]] = {}
 
 
+def _trust_proxy() -> bool:
+    """是否信任反向代理传来的客户端 IP。
+
+    默认关闭：服务直接暴露公网时，X-Forwarded-For 可被伪造，开启会让限流形同虚设。
+    仅在 Nginx / Caddy / 云负载均衡之后部署时设为 1，并同步配置 FORWARDED_ALLOW_IPS。
+    """
+    return os.environ.get("RNA_TRUST_PROXY", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _client_ip(request: Request) -> str:
+    if _trust_proxy():
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            # 代理链中最左侧为真实客户端
+            return forwarded.split(",")[0].strip()
+        real_ip = request.headers.get("x-real-ip")
+        if real_ip:
+            return real_ip.strip()
     return request.client.host if request.client else "unknown"
 
 
@@ -119,10 +160,21 @@ def _examples_path() -> str:
     )
 
 
-@lru_cache(maxsize=1)
+_EXAMPLES_LOCK = threading.Lock()
+_EXAMPLES_CACHE: Dict[str, object] = {"mtime": None, "data": []}
+
+
 def _load_examples() -> List[dict]:
-    with open(_examples_path(), encoding="utf-8") as f:
-        return json.load(f)
+    """按文件 mtime 缓存：原地更新 examples.json 后无需重启服务。"""
+    path = _examples_path()
+    mtime = os.path.getmtime(path)
+    with _EXAMPLES_LOCK:
+        if _EXAMPLES_CACHE["mtime"] == mtime:
+            return _EXAMPLES_CACHE["data"]
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        _EXAMPLES_CACHE.update(mtime=mtime, data=data)
+        return data
 
 
 @app.get("/api/health")

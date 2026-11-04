@@ -279,3 +279,78 @@ def test_unknown_api_path_is_404():
     res = client.get("/api/does-not-exist")
     assert res.status_code == 404
 
+
+# --------------------------------------------------------------------------- #
+# 反向代理与优雅关闭
+# --------------------------------------------------------------------------- #
+def _make_request(xff=None, client_host="10.0.0.1"):
+    from starlette.requests import Request
+
+    headers = [(b"x-forwarded-for", xff.encode())] if xff else []
+    return Request({"type": "http", "headers": headers, "client": (client_host, 1234)})
+
+
+def test_client_ip_ignores_forwarded_header_by_default(monkeypatch):
+    from backend import main
+
+    monkeypatch.delenv("RNA_TRUST_PROXY", raising=False)
+    req = _make_request(xff="1.2.3.4, 5.6.7.8")
+    assert main._client_ip(req) == "10.0.0.1", "未显式信任代理时不能采信 X-Forwarded-For"
+
+
+def test_client_ip_honors_forwarded_header_when_trusted(monkeypatch):
+    from backend import main
+
+    monkeypatch.setenv("RNA_TRUST_PROXY", "1")
+    assert main._client_ip(_make_request(xff="1.2.3.4, 5.6.7.8")) == "1.2.3.4"
+    assert main._client_ip(_make_request()) == "10.0.0.1"
+
+
+def test_cancel_all_cancels_only_unfinished_jobs():
+    import threading
+
+    with rna_fm._JOB_LOCK:
+        rna_fm._JOBS.clear()
+        rna_fm._JOB_EVENTS.clear()
+        rna_fm._JOB_ORDER.clear()
+        base = {"kind": "embed", "progress": 0.0, "result": None, "error": None}
+        rna_fm._JOBS["q"] = {**base, "id": "q", "status": "queued"}
+        rna_fm._JOBS["r"] = {**base, "id": "r", "status": "running"}
+        rna_fm._JOBS["d"] = {**base, "id": "d", "status": "done"}
+        rna_fm._JOB_EVENTS["r"] = threading.Event()
+
+    assert rna_fm.cancel_all() == 2
+    assert rna_fm.get_job("q")["status"] == "cancelled"
+    assert rna_fm.get_job("r")["status"] == "cancelled"
+    assert rna_fm.get_job("d")["status"] == "done"
+
+    with rna_fm._JOB_LOCK:
+        rna_fm._JOBS.clear()
+        rna_fm._JOB_EVENTS.clear()
+        rna_fm._JOB_ORDER.clear()
+
+
+def test_multi_worker_config_is_rejected(monkeypatch):
+    from backend import main
+
+    monkeypatch.setenv("WEB_CONCURRENCY", "4")
+    with pytest.raises(RuntimeError, match="单进程"):
+        main._check_single_process()
+
+    monkeypatch.setenv("WEB_CONCURRENCY", "1")
+    main._check_single_process()
+
+
+def test_examples_reload_when_file_changes(monkeypatch, tmp_path):
+    from backend import main
+
+    path = tmp_path / "examples.json"
+    path.write_text('[{"id": "a"}]', encoding="utf-8")
+    monkeypatch.setattr(main, "_examples_path", lambda: str(path))
+    monkeypatch.setitem(main._EXAMPLES_CACHE, "mtime", None)
+    assert len(main._load_examples()) == 1
+
+    path.write_text('[{"id": "a"}, {"id": "b"}]', encoding="utf-8")
+    os.utime(path, (time.time() + 5, time.time() + 5))
+    assert len(main._load_examples()) == 2
+

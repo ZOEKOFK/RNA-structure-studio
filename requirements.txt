@@ -1,5 +1,6 @@
-fastapi>=0.110
-uvicorn[standard]>=0.29
+fastapi==0.128.8
+uvicorn[standard]==0.39.0
+pydantic==2.13.5
 # 真实能量模型引擎（ViennaRNA Python 绑定）为可选依赖：
 # 无可用 wheel 的平台强制安装会让 pip 整体失败，因此单独放在
 # requirements-optional.txt。不安装也能启动，后端自动降级到纯 Python 引擎。

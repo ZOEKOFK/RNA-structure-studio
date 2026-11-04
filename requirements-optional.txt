@@ -1,4 +1,5 @@
 # 可选：启用真实能量模型引擎（ViennaRNA Python 绑定）。
 # 安装：pip install -r requirements-optional.txt
 # 未安装时后端自动降级到纯 Python 引擎，功能可用但能量为估计值。
-ViennaRNA>=2.7
+# 锁定版本以保证构建可复现（2.7.0 提供 cp311 manylinux wheel，无需编译器）。
+ViennaRNA==2.7.0

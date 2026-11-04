@@ -12,6 +12,7 @@ const sequence = ref(normalizeSequence(route.query.seq || ''))
 const examples = ref([])
 const selectedExample = ref('')
 const engineState = ref({ engine: 'fallback', error: null })
+const engineNote = ref('')
 
 const loading = ref(false)
 const progress = ref(0)
@@ -20,6 +21,7 @@ const embed = ref(null)
 const mut = ref(null)
 const jobId = ref('')
 const queueHint = ref('')
+const stageHint = ref('')
 
 const position = ref(1)
 const base = ref('A')
@@ -43,10 +45,14 @@ function sleep(ms) {
 async function waitJob(id) {
   jobId.value = id
   const started = Date.now()
+  // 首次需要加载/下载约 398 MB 权重，超时上限放宽到 10 分钟
+  let timeoutMs = 120000
   try {
-    while (Date.now() - started < 120000) {
+    while (Date.now() - started < timeoutMs) {
       const job = await api.deepJob(id)
       progress.value = job.progress || 0
+      stageHint.value = job.stage || ''
+      if (job.stage) timeoutMs = 600000
       if (job.status === 'queued' && job.queue_position) {
         queueHint.value = `排队中：第 ${job.queue_position} / ${job.queue_length} 位`
       } else {
@@ -59,6 +65,7 @@ async function waitJob(id) {
     }
   } finally {
     queueHint.value = ''
+    stageHint.value = ''
   }
   throw new Error('任务超时，请重试（长序列 CPU 推理可能较慢）')
 }
@@ -307,6 +314,7 @@ onMounted(async () => {
   try {
     const [h, e] = await Promise.all([api.health(), api.examples()])
     engineState.value = { engine: h.deep_engine || 'fallback', error: h.deep_error || null }
+    engineNote.value = h.deep_note || ''
     limit.value = h.deep_max_len || limit.value
     examples.value = e.examples.filter((x) => normalizeSequence(x.sequence).length <= limit.value)
   } catch {
@@ -358,7 +366,9 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-if="loading" class="progress"><div :style="{ width: (progress * 100) + '%' }"></div></div>
-      <p v-if="queueHint" class="hint">{{ queueHint }}</p>
+      <p v-if="stageHint" class="hint">{{ stageHint }}</p>
+      <p v-else-if="queueHint" class="hint">{{ queueHint }}</p>
+      <p v-if="engineNote" class="hint">{{ engineNote }}</p>
       <p v-if="error" class="error">{{ error }}</p>
 
       <div v-if="embed" class="row stats">

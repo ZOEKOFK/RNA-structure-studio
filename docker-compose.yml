@@ -5,21 +5,29 @@ services:
       args:
         # 设为 1 时安装 torch + multimolecule（镜像更大，构建更慢）
         INSTALL_DEEP: "0"
+        # 便于追溯镜像对应的代码版本：GIT_COMMIT=$(git rev-parse --short HEAD) docker compose build
+        GIT_COMMIT: "${GIT_COMMIT:-unknown}"
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/app/data
-      # RNA-FM 权重目录（可选）；不存在时自动使用降级嵌入
+      # 示例库只读挂载，便于宿主直接维护数据；写入缓存放 /app/cache
+      - ./data:/app/data:ro
+      # RNA-FM 权重目录（可选）；无权重时自动从 hf-mirror 下载
       - ./models:/app/models:ro
+      # 嵌入缓存用命名卷，避免 bind mount 的宿主机属主/权限问题
+      - rna-cache:/app/cache
     environment:
       - PYTHONUNBUFFERED=1
       - RNA_LOG_LEVEL=INFO
+      - RNA_CACHE_DIR=/app/cache
       # 生产环境建议改为实际前端来源，默认 * 仅用于本地
       - RNA_CORS_ORIGINS=*
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
+      # 仅在 Nginx / Caddy / 云负载均衡之后启用（信任 X-Forwarded-For 才能按真实 IP 限流）；
+      # 直接暴露公网时必须保持 0，否则请求头可被伪造绕过限流
+      - RNA_TRUST_PROXY=0
+    # 深度任务为协作式取消，给优雅关闭留出时间（默认 10s 可能截断长任务）
+    stop_grace_period: 30s
     restart: unless-stopped
+
+volumes:
+  rna-cache:

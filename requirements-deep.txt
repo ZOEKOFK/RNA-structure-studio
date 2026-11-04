@@ -5,8 +5,11 @@
 #   pip install -r requirements-deep.txt
 # 权重放 models/rnafm/（pytorch_model.bin + config.json），
 # 否则首次运行会尝试从 hf-mirror.com 拉取 multimolecule/rnafm（约 398 MB）。
-multimolecule
+# 锁死 multimolecule：0.2.x 依赖 transformers>=4.56 的 initialization /
+# tokenizer 注册接口，与下面的 transformers 4.46.3 + torch 2.5.1 不兼容
+# （症状：Tokenizer class RnaTokenizer does not exist，深度层静默降级）。
+multimolecule==0.0.8
 # transformers 4.56+ 要求 torch>=2.6 才能 torch.load .bin 检查点，
 # 因此锁在兼容 torch 2.5 的区间；新版 transformers 的 tokenizer
 # 也会与 multimolecule 0.0.8 的特殊 token 传参不兼容。
-transformers>=4.40,<4.56
+transformers==4.46.3
