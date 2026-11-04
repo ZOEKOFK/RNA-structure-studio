@@ -1,0 +1,10 @@
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    # 阶段 0 会把 ViennaRNA 装进镜像；本地直接 uvicorn 跑则走降级引擎
+    environment:
+      - PYTHONUNBUFFERED=1

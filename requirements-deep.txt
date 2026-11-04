@@ -1,0 +1,14 @@
+# 可选：真实 RNA-FM 深度层（torch + multimolecule）。
+# Windows 建议先装 CPU 版 torch 以减小体积：
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+# 然后：
+#   pip install -r requirements-deep.txt
+# 权重放 models/rnafm/（pytorch_model.bin + config.json），
+# 否则首次运行会尝试从 hf-mirror.com 拉取 multimolecule/rnafm（约 398 MB）。
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+multimolecule
+# transformers 4.56+ 要求 torch>=2.6 才能 torch.load .bin 检查点，
+# 因此锁在兼容 torch 2.5 的区间；新版 transformers 的 tokenizer
+# 也会与 multimolecule 0.0.8 的特殊 token 传参不兼容。
+transformers>=4.40,<4.56

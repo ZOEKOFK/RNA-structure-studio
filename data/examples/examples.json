@@ -1,0 +1,92 @@
+[
+  {
+    "id": "test-hairpin",
+    "name": "测试发夹（9 nt）",
+    "type": "合成发夹",
+    "sequence": "GGGAAACCC",
+    "dot_bracket": "(((...)))",
+    "mfe": -1.2,
+    "pdb": null,
+    "annotation": "最小发夹结构，用于功能自检与基线对照。"
+  },
+  {
+    "id": "trna-phe",
+    "name": "tRNA^Phe（酵母）",
+    "type": "tRNA",
+    "sequence": "GCGGAUUUAGCUCAGUUGGGAGAGCGCCAGACUGAAGAUCUGGAGGUCCUGUGUUCGAUCCACAGAAUUCGCACCA",
+    "dot_bracket": "(((((((..((((........)))).(((((.......))))).....(((((.......))))))))))))....",
+    "mfe": -22.4,
+    "pdb": "4TNA",
+    "annotation": "酵母苯丙氨酸 tRNA，经典三叶草结构；PDB 4TNA 为已解析晶体结构。"
+  },
+  {
+    "id": "5s-rrna-ecoli",
+    "name": "5S rRNA（大肠杆菌）",
+    "type": "rRNA",
+    "sequence": "UGCCUGGCGGCCGUAGCGCGGUGGUCCCACCUGACCCCAUGCCGAACUCAGAAGUGAAACGCCGUAGCGCCGAUGGUAGUGUGGGGUCUCCCCAUGCGAGAGUAGGGAACUGCCAGGCAU",
+    "dot_bracket": "((((((((((((((...)))).(((...))).((((((((((...((.((...(((..((...))..)))...)))).))))))))))..(((.(((....))))))..)))))))))).",
+    "mfe": -50.9,
+    "pdb": null,
+    "annotation": "大肠杆菌 5S rRNA（120 nt），多茎环复杂二级结构。"
+  },
+  {
+    "id": "hammerhead-1hmh",
+    "name": "锤头核酶（34 nt）",
+    "type": "核酶",
+    "sequence": "GGCGACCCUGAUGAGGCCGAAAGGCCGAAACCGU",
+    "dot_bracket": "..............((((....))))........",
+    "mfe": -8.1,
+    "pdb": "1HMH",
+    "annotation": "锤头核酶（hammerhead ribozyme）的 RNA 链；PDB 1HMH 为 RNA–DNA 复合晶体结构，3D 视图会同时显示 13 nt DNA 链。"
+  },
+  {
+    "id": "hdv-ribozyme-1drz",
+    "name": "HDV 核酶（72 nt）",
+    "type": "核酶",
+    "sequence": "GGCCGGCAUGGUCCCAGCCUCCUCGCUGGCGCCGGCUGGGCAACACCAUUGCACUCCGGUGGCGAAUGGGAC",
+    "dot_bracket": "(.(((((.((((.(((((......))))).))))))))).)....(((((((((....)).)).)))))...",
+    "mfe": -33.6,
+    "pdb": "1DRZ",
+    "annotation": "丁型肝炎病毒基因组核酶（HDV ribozyme）；PDB 1DRZ 与 U1A 蛋白共结晶，3D 视图含蛋白复合物。"
+  },
+  {
+    "id": "tpp-riboswitch-2gdi",
+    "name": "TPP 核糖开关（80 nt）",
+    "type": "核糖开关",
+    "sequence": "GGACUCGGGGUGCCCUUCUGCGUGAAGGCUGAGAAAUACCCGUAUCACCUGAUCUGGAUAAUGCCAGCGUAGGGAAGUUC",
+    "dot_bracket": ".((..((((..(((.(((.....)))))).........))))..)).((((..((((......))))..)))).......",
+    "mfe": -21.6,
+    "pdb": "2GDI",
+    "annotation": "硫胺素焦磷酸（TPP）核糖开关；PDB 2GDI 为与 TPP 配体结合的晶体结构。"
+  },
+  {
+    "id": "tetraloop",
+    "name": "UUCG 四环发夹（12 nt）",
+    "type": "合成发夹",
+    "sequence": "GCGCUUCGGCGC",
+    "dot_bracket": "((((....))))",
+    "mfe": -5.5,
+    "pdb": null,
+    "annotation": "富含 GC 的茎 + 稳定 UUCG 四环，RNA 中常见的高稳定基序。"
+  },
+  {
+    "id": "long-stem",
+    "name": "长茎发夹（20 nt）",
+    "type": "合成发夹",
+    "sequence": "GGGGGGGGAAAACCCCCCCC",
+    "dot_bracket": "((((((((....))))))))",
+    "mfe": -18.6,
+    "pdb": null,
+    "annotation": "8 bp 长茎 + 4 nt 环，展示高碱基配对密度。"
+  },
+  {
+    "id": "double-hairpin",
+    "name": "双发夹（21 nt）",
+    "type": "合成多分支",
+    "sequence": "GGGAAACCCUUUGGGAAACCC",
+    "dot_bracket": "(((...(((...)))...)))",
+    "mfe": -5.8,
+    "pdb": null,
+    "annotation": "两个茎环嵌套，展示多分支（multiloop）折叠形态。"
+  }
+]
