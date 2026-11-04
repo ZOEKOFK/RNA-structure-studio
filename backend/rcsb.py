@@ -7,34 +7,63 @@ from __future__ import annotations
 
 import json
 import threading
+import time
+import urllib.error
 import urllib.request
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
 ENTRY_URL = "https://data.rcsb.org/rest/v1/core/entry/{pdb_id}"
 MAX_CACHE = 100              # 已查序列的结果缓存条数
 DEFAULT_TOP = 5
+USER_AGENT = "rna-fold/0.1 (RNA structure prediction platform)"
+_RETRIES = 2                 # 网络波动时的重试次数（不含首次）
+_RETRY_BACKOFF = 0.4         # 秒，按尝试次数线性递增
 
 _LOCK = threading.Lock()
-_CACHE: "OrderedDict[str, List[dict]]" = OrderedDict()
+_CACHE: "OrderedDict[Tuple[str, int, float], List[dict]]" = OrderedDict()
+
+
+def _fetch_json(req: urllib.request.Request, timeout: float) -> dict:
+    """GET/POST 并解析 JSON；对 5xx / 429 / 网络错误做有限重试。"""
+    last: Optional[Exception] = None
+    for attempt in range(_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as e:
+            # 4xx（除 429）属于请求本身有问题，重试无意义
+            if e.code < 500 and e.code != 429:
+                raise
+            last = e
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            last = e
+        if attempt < _RETRIES:
+            time.sleep(_RETRY_BACKOFF * (attempt + 1))
+    assert last is not None
+    raise last
 
 
 def _post_json(url: str, payload: dict, timeout: float) -> dict:
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+        },
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.load(resp)
+    return _fetch_json(req, timeout)
 
 
 def _get_json(url: str, timeout: float) -> dict:
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.load(resp)
+    req = urllib.request.Request(
+        url, headers={"Accept": "application/json", "User-Agent": USER_AGENT}
+    )
+    return _fetch_json(req, timeout)
 
 
 def _first(value):
@@ -74,10 +103,11 @@ def search_similar(
 
     网络不可达或服务异常会抛出异常，由调用方决定是否降级。
     """
+    key = (sequence, top, identity_cutoff)
     with _LOCK:
-        cached = _CACHE.get(sequence)
+        cached = _CACHE.get(key)
         if cached is not None:
-            _CACHE.move_to_end(sequence)
+            _CACHE.move_to_end(key)
             return cached
 
     payload = {
@@ -105,8 +135,8 @@ def search_similar(
     hits.sort(key=lambda h: (h["score"] is None, -(h["score"] or 0.0)))
 
     with _LOCK:
-        _CACHE[sequence] = hits
-        _CACHE.move_to_end(sequence)
+        _CACHE[key] = hits
+        _CACHE.move_to_end(key)
         while len(_CACHE) > MAX_CACHE:
             _CACHE.popitem(last=False)
     return hits

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api'
 import { normalizeSequence } from '../sequence'
@@ -12,6 +12,10 @@ const loading = ref(false)
 const error = ref('')
 const selectedPdb = ref('')
 const copied = ref(false)
+const controller = ref(null)
+const iframeReady = ref(false)
+const iframeSlow = ref(false)
+let iframeTimer = null
 
 const normalized = computed(() => normalizeSequence(sequence.value))
 
@@ -44,6 +48,28 @@ const viewerPdb = computed(
 const viewerUrl = computed(() =>
   viewerPdb.value ? `https://molstar.org/viewer/?pdb=${viewerPdb.value}` : ''
 )
+
+// Mol* 为外部页面，网络受限时 iframe 可能长时间空白：10 秒未加载完给出提示
+watch(viewerUrl, (url) => {
+  iframeReady.value = false
+  iframeSlow.value = false
+  clearTimeout(iframeTimer)
+  if (url) {
+    iframeTimer = setTimeout(() => {
+      if (!iframeReady.value) iframeSlow.value = true
+    }, 10000)
+  }
+})
+
+onUnmounted(() => {
+  clearTimeout(iframeTimer)
+  if (controller.value) controller.value.abort()
+})
+
+function onIframeLoad() {
+  iframeReady.value = true
+  iframeSlow.value = false
+}
 
 function pickSimilar(item) {
   selectedPdb.value = item.pdb_id
@@ -80,16 +106,31 @@ async function copyBridge() {
 
 async function run() {
   if (!normalized.value) return
+  cancel()
+  const c = new AbortController()
+  controller.value = c
   loading.value = true
   error.value = ''
   result.value = null
   selectedPdb.value = ''
   copied.value = false
   try {
-    result.value = await api.tertiary(normalized.value)
+    result.value = await api.tertiary(normalized.value, { signal: c.signal })
   } catch (e) {
-    error.value = e.message
+    // 用户主动取消时不当作错误展示
+    if (!c.signal.aborted) error.value = e.message
   } finally {
+    if (controller.value === c) {
+      controller.value = null
+      loading.value = false
+    }
+  }
+}
+
+function cancel() {
+  if (controller.value) {
+    controller.value.abort()
+    controller.value = null
     loading.value = false
   }
 }
@@ -106,6 +147,7 @@ async function run() {
       <textarea v-model="sequence" placeholder="输入 RNA 序列，或点击下方实例…"></textarea>
       <div style="margin-top: 10px; display: flex; gap: 10px;">
         <button :disabled="loading || !normalized.length" @click="run">查询 3D 结构</button>
+        <button v-if="loading" class="secondary" @click="cancel">取消查询</button>
       </div>
       <p v-if="error" class="error">{{ error }}</p>
     </div>
@@ -142,9 +184,16 @@ async function run() {
           :src="viewerUrl"
           style="width: 100%; height: 560px; border: 1px solid var(--border); border-radius: 8px; margin-top: 10px;"
           allowfullscreen
+          @load="onIframeLoad"
         ></iframe>
         <p v-if="viewerUrl" class="hint">
           3D 视图由 Mol* Viewer 提供（当前 PDB {{ viewerPdb }}），数据来自 RCSB PDB。
+          <a :href="viewerUrl" target="_blank" rel="noopener noreferrer">在新窗口打开</a>
+        </p>
+        <p v-if="iframeSlow" class="hint">
+          视图 10 秒内未加载完成，通常是内网或离线无法访问 molstar.org；
+          可点击上方「在新窗口打开」重试，或直接访问
+          <a :href="`https://www.rcsb.org/structure/${viewerPdb}`" target="_blank" rel="noopener noreferrer">RCSB 页面</a>。
         </p>
       </div>
 

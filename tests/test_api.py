@@ -158,6 +158,24 @@ def test_tertiary_prebuilt_includes_structure_and_bridge():
     assert data["rnacomposer"]["input"].splitlines()[1] == target["sequence"]
 
 
+def test_tertiary_rate_limited(monkeypatch):
+    from backend import main
+
+    main._RATE_HITS.clear()
+    monkeypatch.setattr(main, "_RATE_LIMIT", 2)
+    monkeypatch.setattr("backend.rcsb.search_similar", lambda seq: [])
+
+    url = "/api/tertiary"
+    body = {"sequence": "GGGAAACCCGGGAAACCC"}
+    assert client.post(url, json=body).status_code == 200
+    assert client.post(url, json=body).status_code == 200
+    res = client.post(url, json=body)
+    assert res.status_code == 429
+    assert "过于频繁" in res.json()["detail"]
+    assert res.headers["Retry-After"]
+    main._RATE_HITS.clear()
+
+
 # --------------------------------------------------------------------------- #
 # 深度接口
 # --------------------------------------------------------------------------- #

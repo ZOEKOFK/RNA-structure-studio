@@ -50,8 +50,23 @@ _MODEL_ERROR: Optional[str] = None
 _EXECUTOR = ThreadPoolExecutor(max_workers=1)
 _JOB_LOCK = threading.Lock()
 _JOBS: Dict[str, dict] = {}
+_JOB_EVENTS: Dict[str, threading.Event] = {}
 _JOB_ORDER: List[str] = []
 _MAX_JOBS = 50
+
+
+class JobCancelled(Exception):
+    """协作式取消信号：在计算阶段边界抛出，尽快释放后台 worker。"""
+
+
+# 后台线程的取消事件（ThreadPoolExecutor 只有一个 worker，用 thread-local 传递）
+_CURRENT_CANCEL = threading.local()
+
+
+def _raise_if_cancelled() -> None:
+    event = getattr(_CURRENT_CANCEL, "event", None)
+    if event is not None and event.is_set():
+        raise JobCancelled()
 
 
 # --------------------------------------------------------------------------- #
@@ -211,6 +226,7 @@ def _fallback_vectors(seq: str, structure: str) -> List[List[float]]:
 
     vectors: List[List[float]] = []
     for i in range(n):
+        _raise_if_cancelled()
         b = seq[i]
         prev = seq[i - 1] if i > 0 else "A"
         nxt = seq[i + 1] if i + 1 < n else "A"
@@ -252,10 +268,14 @@ def _compute_vectors(seq: str) -> Tuple[List[List[float]], str, str, Optional[st
     structure = rna_fold.fold(seq)["structure"]
     try:
         vectors = _real_vectors(seq)
-        return vectors, "rna-fm", structure, None
+    except JobCancelled:
+        raise
     except Exception as e:
         reason = _MODEL_ERROR or f"{type(e).__name__}: {e}"
         return _fallback_vectors(seq, structure), "fallback", structure, reason
+    # torch 前向不可中断，返回后再确认一次，避免取消后仍继续做 PCA
+    _raise_if_cancelled()
+    return vectors, "rna-fm", structure, None
 
 
 # --------------------------------------------------------------------------- #
@@ -357,6 +377,7 @@ def _pca2(vectors: List[List[float]]) -> List[List[float]]:
     def power_iter(data: List[List[float]], iters: int = 40) -> List[float]:
         vec = [1.0 / math.sqrt(d)] * d
         for _ in range(iters):
+            _raise_if_cancelled()
             proj = [sum(row[k] * vec[k] for k in range(d)) for row in data]
             new = [sum(row[k] * p for row, p in zip(data, proj)) for k in range(d)]
             norm = math.sqrt(sum(x * x for x in new)) or 1.0
@@ -393,6 +414,7 @@ def _pca_components(vectors: List[List[float]]):
     def power_iter(data):
         vec = [1.0 / math.sqrt(d)] * d
         for _ in range(40):
+            _raise_if_cancelled()
             proj = [sum(row[k] * vec[k] for k in range(d)) for row in data]
             new = [sum(row[k] * p for row, p in zip(data, proj)) for k in range(d)]
             norm = math.sqrt(sum(x * x for x in new)) or 1.0
@@ -418,10 +440,12 @@ def embed(sequence: str, progress=None) -> dict:
 
     if progress:
         progress(0.15)
+    _raise_if_cancelled()
     data, structure, source = _cached_vectors(seq, engine_status())
     vectors = data["vectors"]
     if progress:
         progress(0.7)
+    _raise_if_cancelled()
 
     norms = [round(math.sqrt(sum(x * x for x in v)), 3) for v in vectors]
     pca2 = _pca2(vectors)
@@ -460,14 +484,17 @@ def mutate_shift(sequence: str, position: int, base: str, progress=None) -> dict
     wt, wt_struct, _ = _cached_vectors(seq, engine_status())
     if progress:
         progress(0.55)
+    _raise_if_cancelled()
     mt, mt_struct, _ = _cached_vectors(mutated, engine_status())
     if progress:
         progress(0.8)
+    _raise_if_cancelled()
 
     # 两侧维度可能不同（模型可用性变化），统一用较短维度比较
     dim = min(wt.get("dim", 0), mt.get("dim", 0))
     shift = []
     for a, b in zip(wt["vectors"], mt["vectors"]):
+        _raise_if_cancelled()
         shift.append(round(math.sqrt(sum((a[k] - b[k]) ** 2 for k in range(dim))), 3))
 
     mean_shift = round(sum(shift) / len(shift), 3) if shift else 0.0
@@ -517,35 +544,49 @@ def _update(job_id: str, **kw) -> None:
 
 def submit(kind: str, fn, *args) -> str:
     job_id = uuid.uuid4().hex[:12]
+    event = threading.Event()
     with _JOB_LOCK:
         _JOBS[job_id] = {"id": job_id, "kind": kind, "status": "queued",
                          "progress": 0.0, "result": None, "error": None}
+        _JOB_EVENTS[job_id] = event
         _JOB_ORDER.append(job_id)
         while len(_JOB_ORDER) > _MAX_JOBS:
-            _JOBS.pop(_JOB_ORDER.pop(0), None)
+            old = _JOB_ORDER.pop(0)
+            _JOBS.pop(old, None)
+            _JOB_EVENTS.pop(old, None)
 
     def runner():
         with _JOB_LOCK:
             if _JOBS.get(job_id, {}).get("status") == "cancelled":
                 return
+        _CURRENT_CANCEL.event = event
         _update(job_id, status="running", progress=0.05)
         try:
             result = fn(*args, progress=lambda p: _update(job_id, progress=round(p, 2)))
+            _raise_if_cancelled()
             _update(job_id, status="done", progress=1.0, result=result)
+        except JobCancelled:
+            # 状态已由 cancel_job 置为 cancelled，无需再写结果
+            pass
         except Exception as e:
             _update(job_id, status="error", error=str(e), progress=1.0)
+        finally:
+            _CURRENT_CANCEL.event = None
 
     _EXECUTOR.submit(runner)
     return job_id
 
 
 def cancel_job(job_id: str) -> bool:
-    """取消排队中或运行中的任务；已完成的任务不可取消。"""
+    """取消排队中或运行中的任务；运行中的任务会在下一个计算检查点中断。"""
     with _JOB_LOCK:
         job = _JOBS.get(job_id)
         if not job or job["status"] in ("done", "error", "cancelled"):
             return False
         job.update(status="cancelled", progress=1.0, error="任务已取消")
+        event = _JOB_EVENTS.get(job_id)
+        if event is not None:
+            event.set()
         return True
 
 

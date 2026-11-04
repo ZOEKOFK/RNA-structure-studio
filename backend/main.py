@@ -8,9 +8,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import List, Optional
+import threading
+import time
+from functools import lru_cache
+from typing import Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -34,6 +37,48 @@ app.add_middleware(
 )
 
 _RNACOMPOSER_MAX_LEN = composer_api.RNACOMPOSER_MAX_LEN   # RNAComposer 官方交互模式限长（500 nt）
+
+
+def _env_int(name: str, default: int) -> int:
+    """读取整型环境变量，非法值回退默认值（<=0 表示关闭）。"""
+    try:
+        value = int(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return value
+
+
+# /api/tertiary 会向外请求 RCSB，按客户端 IP 做简单滑动窗口限流，防止被放大成外部流量。
+_RATE_LIMIT = _env_int("RNA_TERTIARY_RATE_LIMIT", 30)    # 每 IP 每分钟允许次数；0=关闭
+_RATE_WINDOW = 60.0
+_RATE_LOCK = threading.Lock()
+_RATE_HITS: Dict[str, List[float]] = {}
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _check_rate_limit(request: Request) -> None:
+    if _RATE_LIMIT <= 0:
+        return
+    ip = _client_ip(request)
+    now = time.time()
+    with _RATE_LOCK:
+        hits = [t for t in _RATE_HITS.get(ip, []) if now - t < _RATE_WINDOW]
+        if len(hits) >= _RATE_LIMIT:
+            retry_after = int(_RATE_WINDOW - (now - hits[0])) + 1
+            raise HTTPException(
+                status_code=429,
+                detail=f"请求过于频繁，请 {retry_after} 秒后重试",
+                headers={"Retry-After": str(retry_after)},
+            )
+        hits.append(now)
+        _RATE_HITS[ip] = hits
+        if len(_RATE_HITS) > 1024:
+            # 清理窗口内已无请求的 IP，避免字典无限增长
+            for key in [k for k, v in _RATE_HITS.items() if not v or now - v[-1] >= _RATE_WINDOW]:
+                _RATE_HITS.pop(key, None)
 
 
 class FoldRequest(BaseModel):
@@ -74,6 +119,7 @@ def _examples_path() -> str:
     )
 
 
+@lru_cache(maxsize=1)
 def _load_examples() -> List[dict]:
     with open(_examples_path(), encoding="utf-8") as f:
         return json.load(f)
@@ -162,7 +208,8 @@ def mutate(req: MutateRequest):
 
 
 @app.post("/api/tertiary")
-def tertiary(req: TertiaryRequest):
+def tertiary(req: TertiaryRequest, request: Request):
+    _check_rate_limit(request)
     try:
         seq = rna_fold.normalize_sequence(req.sequence)
         rna_fold.validate_sequence(seq)

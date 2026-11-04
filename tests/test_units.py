@@ -149,6 +149,19 @@ def test_cancel_queued_job():
                 rna_fm._JOB_ORDER.remove(job_id)
 
 
+def test_cancel_signal_interrupts_running_computation():
+    import threading
+
+    event = threading.Event()
+    event.set()
+    rna_fm._CURRENT_CANCEL.event = event
+    try:
+        with pytest.raises(rna_fm.JobCancelled):
+            rna_fm._pca2([[0.0, 1.0, 0.0, 0.0]] * 6)
+    finally:
+        del rna_fm._CURRENT_CANCEL.event
+
+
 def test_get_job_reports_queue_position():
     first, second = "test-queue-1", "test-queue-2"
     with rna_fm._JOB_LOCK:
@@ -230,7 +243,28 @@ def test_rcsb_failure_is_not_cached(monkeypatch):
     monkeypatch.setattr(rcsb, "_post_json", boom)
     with pytest.raises(TimeoutError):
         rcsb.search_similar(seq)
-    assert seq not in rcsb._CACHE
+    # 缓存键为 (sequence, top, identity_cutoff)，失败时不应写入任何相关条目
+    assert not [k for k in rcsb._CACHE if k[0] == seq]
+
+
+def test_rcsb_cache_key_includes_query_options(monkeypatch):
+    rcsb._CACHE.clear()
+    calls = {"count": 0}
+
+    def fake_post(url, payload, timeout):
+        calls["count"] += 1
+        return {"result_set": [{"identifier": "1EHZ", "score": 1.0}]}
+
+    monkeypatch.setattr(rcsb, "_post_json", fake_post)
+    monkeypatch.setattr(rcsb, "_get_json", lambda url, timeout: {})
+
+    seq = "ACGUACGUACGUACGU"
+    rcsb.search_similar(seq, top=3)
+    rcsb.search_similar(seq, top=5)
+    assert calls["count"] == 2, "不同 top 不应共享缓存"
+    rcsb.search_similar(seq, top=3)
+    assert calls["count"] == 2
+    rcsb._CACHE.clear()
 
 
 def test_composer_input_format():
