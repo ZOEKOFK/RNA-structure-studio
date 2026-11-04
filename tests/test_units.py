@@ -267,6 +267,26 @@ def test_rcsb_cache_key_includes_query_options(monkeypatch):
     rcsb._CACHE.clear()
 
 
+def test_rcsb_empty_body_means_no_hits(monkeypatch):
+    """RCSB 零命中返回 204 + 空响应体，应视为“无结果”而非解析失败。"""
+    rcsb._CACHE.clear()
+
+    class _EmptyResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b""
+
+    monkeypatch.setattr(rcsb.urllib.request, "urlopen", lambda req, timeout: _EmptyResponse())
+    assert rcsb._post_json(rcsb.SEARCH_URL, {}, 3.0) == {}
+    assert rcsb.search_similar("ACGUACGUACGUACGU") == []
+    rcsb._CACHE.clear()
+
+
 def test_composer_input_format():
     text = composer_api.build_input("GGGAAACCC", "(((...)))")
     assert text.splitlines() == [">rna", "GGGAAACCC", "(((...)))"]

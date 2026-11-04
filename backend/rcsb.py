@@ -32,7 +32,9 @@ def _fetch_json(req: urllib.request.Request, timeout: float) -> dict:
     for attempt in range(_RETRIES + 1):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.load(resp)
+                raw = resp.read()
+                # RCSB 在零命中时返回 204 No Content（空响应体），不是错误
+                return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
             # 4xx（除 429）属于请求本身有问题，重试无意义
             if e.code < 500 and e.code != 429:

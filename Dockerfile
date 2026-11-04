@@ -9,22 +9,19 @@ RUN npm run build
 # ---- 运行时 ----
 FROM python:3.11-slim
 
-# ViennaRNA CLI 提供真实能量模型；CPU 版 torch 供 RNA-FM 深度分析（见 INSTALL_DEEP）
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        vienna-rna \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 COPY requirements.txt requirements-optional.txt requirements-deep.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-# ViennaRNA 绑定为可选：失败时保留 apt 安装的 RNAfold CLI，服务仍可用
+# ViennaRNA Python 绑定：PyPI 提供 manylinux wheel（cp311），无需系统 CLI 或编译器。
+# 若某平台无 wheel 则跳过，后端自动降级到纯 Python 引擎。
 RUN pip install --no-cache-dir -r requirements-optional.txt \
-    || echo "ViennaRNA 绑定不可用，将使用 apt 提供的 RNAfold CLI"
+    || echo "ViennaRNA 绑定安装失败，将使用纯 Python 降级引擎"
 
 # 深度层可选：docker compose build --build-arg INSTALL_DEEP=1 启用真实 RNA-FM
 # （torch 体积较大，默认关闭；未启用时深度分析走确定性降级嵌入）
 ARG INSTALL_DEEP=0
 RUN if [ "$INSTALL_DEEP" = "1" ]; then \
+        pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
         pip install --no-cache-dir -r requirements-deep.txt; \
     else \
         echo "跳过 RNA-FM 依赖（INSTALL_DEEP=0），深度分析使用降级嵌入"; \

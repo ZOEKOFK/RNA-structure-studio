@@ -134,6 +134,14 @@ def _load_backbone_weights(model, src: str) -> None:
         raise RuntimeError(f"权重键不匹配：{result.unexpected_keys[:3]}")
 
 
+def _has_local_weights(path: str) -> bool:
+    """本地目录里是否真的有权重文件（空目录不应拦截在线下载）。"""
+    return any(
+        os.path.isfile(os.path.join(path, name))
+        for name in ("pytorch_model.bin", "model.safetensors")
+    )
+
+
 def _load_model():
     """惰性加载真实 RNA-FM；失败则返回 (None, None) 并记录原因。"""
     global _MODEL, _TOKENIZER, _MODEL_TRIED, _MODEL_ERROR
@@ -147,7 +155,7 @@ def _load_model():
             import torch  # noqa: F401
 
             os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
-            src = _LOCAL_MODEL_DIR if os.path.isdir(_LOCAL_MODEL_DIR) else _HF_REPO
+            src = _LOCAL_MODEL_DIR if _has_local_weights(_LOCAL_MODEL_DIR) else _HF_REPO
             try:
                 # 官方推荐方式：multimolecule 包注册 rnafm 架构
                 import multimolecule  # noqa: F401
