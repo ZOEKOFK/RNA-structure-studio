@@ -431,7 +431,7 @@ def test_3d_predict_builds_and_serves_model(monkeypatch, tmp_path):
     result = job["result"]
     assert result["engine"] == "builtin"
     assert result["fallback"] is None
-    assert result["atoms"] == 3 * len(EXAMPLE_SEQ)
+    assert result["atoms"] == 6 * len(EXAMPLE_SEQ)
     assert result["structure"] == "(((...)))"
 
     model = client.get(result["url"])
@@ -531,10 +531,14 @@ def test_builtin_model_geometry_is_reasonable():
 
     seq, structure = "GGGAAACCC", "(((...)))"
     pdb = rna3d.build_builtin(seq, structure)
+    atom_names = [line[12:16].strip() for line in pdb.splitlines() if line.startswith("ATOM")]
+    # 每残基完整糖-磷酸骨架（Mol* 需要 O3'/C3' 才能连成核酸卡通表示）
+    assert len(atom_names) == 6 * len(seq)
+    assert atom_names[:6] == ["P", "O5'", "C5'", "C4'", "C3'", "O3'"]
+    for name in ("P", "O5'", "C5'", "C4'", "C3'", "O3'"):
+        assert len(_atom_coords(pdb, name)) == len(seq), f"每个残基应输出一个 {name} 原子"
+
     coords = _atom_coords(pdb, "P")
-    assert len(coords) == len(seq), "每个残基应输出一个 P 原子"
-    assert len(_atom_coords(pdb, "C4'")) == len(seq)
-    assert len(_atom_coords(pdb, "C1'")) == len(seq)
 
     def dist(a, b):
         return sum((a[k] - b[k]) ** 2 for k in range(3)) ** 0.5
@@ -545,4 +549,12 @@ def test_builtin_model_geometry_is_reasonable():
 
     backbone = sum(dist(coords[i], coords[i + 1]) for i in range(len(seq) - 1)) / (len(seq) - 1)
     assert abs(backbone - rna3d._BACKBONE) < 1.0, f"骨架平均间距 {backbone:.2f} Å"
+
+    # 相邻骨架原子（含 O3'→P(i+1)）必须落在成键距离区间，否则 Mol* 画不出连续链
+    for i in range(len(seq) - 1):
+        atoms = [_atom_coords(pdb, name)[i] for name in ("P", "O5'", "C5'", "C4'", "C3'", "O3'")]
+        atoms.append(_atom_coords(pdb, "P")[i + 1])
+        for a, b in zip(atoms, atoms[1:]):
+            gap = dist(a, b)
+            assert 1.1 <= gap <= 2.1, f"第 {i + 1} 个残基相邻原子间距 {gap:.2f} Å 不合理"
 

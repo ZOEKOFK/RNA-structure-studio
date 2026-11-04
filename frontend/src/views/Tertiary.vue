@@ -233,7 +233,7 @@ function cancel() {
     <div class="card">
       <h2>本地生成 3D（离线，简化模型）</h2>
       <p class="muted">
-        以当前预测的二级结构为约束，在本地求解粗粒度坐标（P / C4' / C1' 主链），
+        以当前预测的二级结构为约束，在本地求解粗粒度坐标（含 P / O5' / C5' / C4' / C3' / O3' 的完整糖-磷酸骨架），
         不依赖外网与第三方服务。精度低于 RNAComposer / RhoFold+，用于快速查看拓扑与相对位置。
       </p>
       <div style="display: flex; gap: 10px; flex-wrap: wrap;">

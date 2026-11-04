@@ -3,9 +3,10 @@
 两条路径：
 
 1. **内置简化建模器**（默认，纯 Python、零依赖）——把 dot-bracket 当成约束，
-   用环形初值 + 位置约束松弛（backbone 5.9 Å、碱基对 10.4 Å）求解坐标，
-   再按 P / C4' / C1' 三原子输出 PDB。秒级完成，用于教学演示与离线预览，
-   **精度远低于 RNAComposer / RhoFold+**，前端会明确标注。
+   用环形初值 + 位置约束松弛（backbone 5.9 Å、碱基对 10.4 Å）求解 P 坐标，
+   再沿 P(i)–P(i+1) 弦按真实键长铺出完整糖-磷酸骨架（P / O5' / C5' / C4' /
+   C3' / O3'），Mol* 可识别为核酸聚合物并绘制骨架带状表示。秒级完成，
+   用于教学演示与离线预览，**精度远低于 RNAComposer / RhoFold+**，前端会明确标注。
 2. **外部命令钩子**（可选）——``RNA_3D_CMD`` 给出模板，支持占位符
    ``{seq_file}`` / ``{ss_file}`` / ``{out_pdb}`` / ``{workdir}``，
    可接 SimRNA、RhoFold+ 等自行安装的引擎；失败时回退内置建模器。
@@ -50,6 +51,7 @@ _CACHE_DIR = os.environ.get("RNA_3D_CACHE_DIR") or os.path.join(_CACHE_ROOT, "mo
 _BACKBONE = 5.9      # 相邻核苷酸（P 原子）间距（Å）
 _PAIR_DIST = 10.4    # 典型 RNA 碱基对（配对 P 原子）距离（Å）
 _RELAX_ITERS = 240
+_BUILTIN_VERSION = 3  # 内置建模算法版本；改动几何后自增，旧缓存自动失效
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=1)
 _JOB_LOCK = threading.Lock()
@@ -91,18 +93,21 @@ def _depth(structure: str) -> List[int]:
 
 
 def _initial_layout(n: int, structure: str) -> List[List[float]]:
-    """环形初值：碱基按 5'→3' 排布在圆周上，嵌套越深抬得越高。
+    """环形初值：碱基按 5'→3' 排布在圆周上，嵌套越深越向内收并抬高。
 
-    环半径按骨架周长反推（5.9 Å/nt），保证初值本身不会因为过密而爆炸；
-    深度抬升让结构一眼能看出「有层次」而不是一张平面图。
+    环半径按骨架周长反推（5.9 Å/nt），但设 40 Å 上限：不设上限时 76 nt 的
+    tRNA 会摊成半径 71 Å 的大圆盘（Rg≈53 Å，真实 tRNA 约 23 Å），Mol* 里
+    就是一只又大又扁的「蜘蛛」。压到 40 Å 后由嵌套深度同时向内收、向上抬，
+    结构变紧凑且真正有三维层次。
     """
     depth = _depth(structure)
-    radius = max(9.0, _BACKBONE * n / (2 * math.pi))
+    ideal = _BACKBONE * n / (2 * math.pi)
+    radius = max(9.0, min(ideal, 40.0))
     pts: List[List[float]] = []
     for i in range(n):
         theta = 2 * math.pi * i / n
-        r = radius - 3.0 * min(depth[i], 6)
-        pts.append([r * math.cos(theta), r * math.sin(theta), 5.0 * min(depth[i], 8)])
+        r = radius - 2.0 * min(depth[i], 6)
+        pts.append([r * math.cos(theta), r * math.sin(theta), 6.0 * min(depth[i], 8)])
     return pts
 
 
@@ -137,52 +142,123 @@ def _relax(pts: List[List[float]], pairs: List[Tuple[int, int]]) -> List[List[fl
     return pts
 
 
-def _unit(a: List[float], b: List[float]) -> List[float]:
-    dx, dy, dz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
-    norm = math.sqrt(dx * dx + dy * dy + dz * dz) or 1e-6
-    return [dx / norm, dy / norm, dz / norm]
+_AA = {"A": "A", "U": "U", "G": "G", "C": "C"}
+
+# 糖-磷酸骨架原子及沿 P→P 弧的累积距离（Å）。键长取自标准核苷酸几何：
+# P–O5' 1.60、O5'–C5' 1.45、C5'–C4' 1.52、C4'–C3' 1.53、C3'–O3' 1.42，
+# 末端的 O3'–P(i+1) 约 1.58，整段弧长 9.10 Å 对应 P–P 弦长 5.9 Å。
+_BACKBONE_ATOMS = (
+    ("P", "P", 0.00),
+    ("O5'", "O", 1.60),
+    ("C5'", "C", 3.05),
+    ("C4'", "C", 4.57),
+    ("C3'", "C", 6.10),
+    ("O3'", "O", 7.52),
+)
+_BACKBONE_ARC = 9.10
 
 
-_AA = {"A": "  A", "U": "  U", "G": "  G", "C": "  C"}
+def _dist(a: List[float], b: List[float]) -> float:
+    return math.sqrt(sum((a[k] - b[k]) ** 2 for k in range(3)))
+
+
+def _norm(v: List[float]) -> List[float]:
+    n = math.sqrt(sum(x * x for x in v)) or 1e-6
+    return [x / n for x in v]
+
+
+def _direction(a: List[float], b: List[float]) -> List[float]:
+    return _norm([b[k] - a[k] for k in range(3)])
+
+
+def _perpendicular(hint: List[float], axis: List[float]) -> List[float]:
+    """hint 在垂直于 axis 的平面上的投影；退化时用全局轴叉乘兜底。"""
+    dot = sum(hint[k] * axis[k] for k in range(3))
+    v = [hint[k] - dot * axis[k] for k in range(3)]
+    if math.sqrt(sum(x * x for x in v)) > 1e-6:
+        return _norm(v)
+    ref = [1.0, 0.0, 0.0] if abs(axis[0]) < 0.9 else [0.0, 1.0, 0.0]
+    return _norm([
+        axis[1] * ref[2] - axis[2] * ref[1],
+        axis[2] * ref[0] - axis[0] * ref[2],
+        axis[0] * ref[1] - axis[1] * ref[0],
+    ])
+
+
+def _backbone_points(p0, p1, hint) -> List[List[float]]:
+    """沿 P(i)→P(i+1) 弦按真实键长铺 6 个骨架原子。
+
+    单段需容纳 9.1 Å 弧长却只有 5.9 Å 弦长，若走半圆弧主链会在弦两侧各摆
+    ~3 Å，Mol* 的卡通带随之剧烈抖动。这里改成绕弦的小半径螺旋（半径约
+    1.1 Å）：轴向位移随弧长线性增长，周向转一整圈，既不偏离弦太多，又让
+    相邻原子间距落在 1.3–1.6 Å 的成键区间。
+    """
+    chord = _dist(p0, p1)
+    if chord < 1e-3:
+        axis = [1.0, 0.0, 0.0]
+        chord = _BACKBONE
+    else:
+        axis = _direction(p0, p1)
+    side = _perpendicular(hint, axis)
+    tilt = _norm([
+        axis[1] * side[2] - axis[2] * side[1],
+        axis[2] * side[0] - axis[0] * side[2],
+        axis[0] * side[1] - axis[1] * side[0],
+    ])
+    scale = chord / _BACKBONE
+    arc = _BACKBONE_ARC * scale
+    radius = math.sqrt(max(arc * arc - chord * chord, 0.0)) / (2 * math.pi)
+    points: List[List[float]] = []
+    for _name, _elem, offset in _BACKBONE_ATOMS:
+        travelled = offset * scale
+        along = travelled / arc          # 0 → p0，1 → p1
+        phi = 2 * math.pi * along
+        # 半径两端收敛到 0，保证段首尾精确落在 P(i)、P(i+1) 上，
+        # 相邻残基的 O3'→P(i+1) 才不会因相位突变而忽长忽短
+        bulge = radius * math.sin(math.pi * along)
+        points.append([
+            p0[k] + axis[k] * chord * along
+            + bulge * (math.cos(phi) * side[k] + math.sin(phi) * tilt[k])
+            for k in range(3)
+        ])
+    return points
 
 
 def _pdb(seq: str, structure: str, pts: List[List[float]]) -> str:
-    """输出 P / C4' / C1' 三原子，Mol* 的核酸骨架表示可直接识别。"""
+    """输出完整糖-磷酸骨架（P/O5'/C5'/C4'/C3'/O3'），Mol* 能识别为核酸链。"""
     n = len(seq)
     pair_map: Dict[int, int] = {}
     for i, j in rna_fold.dot_bracket_to_pairs(structure):
         pair_map[i], pair_map[j] = j, i
     lines: List[str] = [
         "REMARK   SIMPLIFIED RNA MODEL (constraint-based, teaching grade)",
+        "REMARK   BACKBONE ONLY: P O5* C5* C4* C3* O3* PER RESIDUE",
         f"REMARK   LENGTH {n}  PAIRS {len(pair_map) // 2}",
-        f"TITLE     simplified_model",
+        "TITLE     simplified_model",
     ]
+    serial = 0
+    hint = [0.0, 0.0, 1.0]
     for i in range(n):
-        p = pts[i]
-        fwd = _unit(pts[i], pts[i + 1]) if i + 1 < n else _unit(pts[i - 1], pts[i]) if i > 0 else [1.0, 0.0, 0.0]
+        p0 = pts[i]
+        if i + 1 < n:
+            p1 = pts[i + 1]
+        elif i > 0:
+            axis = _direction(pts[i - 1], pts[i])
+            p1 = [p0[k] + axis[k] * _BACKBONE for k in range(3)]
+        else:
+            p1 = [p0[0] + _BACKBONE, p0[1], p0[2]]
         partner = pair_map.get(i)
         if partner is not None:
-            base_dir = _unit(pts[i], pts[partner])
-        else:
-            # 未配对碱基朝环外：用骨架方向的垂向近似
-            base_dir = [fwd[1], -fwd[0], 0.0]
-            norm = math.sqrt(base_dir[0] ** 2 + base_dir[1] ** 2) or 1e-6
-            base_dir = [base_dir[0] / norm, base_dir[1] / norm, 0.0]
-        c4 = [p[k] + 2.2 * fwd[k] + 1.2 * base_dir[k] for k in range(3)]
-        c1 = [p[k] + 6.0 * fwd[k] + 2.6 * base_dir[k] for k in range(3)]
-        res = _AA.get(seq[i], "  A")
-        lines.append(
-            f"ATOM  {3 * i + 1:5d}  P   {res} A{i + 1:4d}    "
-            f"{p[0]:8.3f}{p[1]:8.3f}{p[2]:8.3f}  1.00  0.00      A    P"
-        )
-        lines.append(
-            f"ATOM  {3 * i + 2:5d}  C4' {res} A{i + 1:4d}    "
-            f"{c4[0]:8.3f}{c4[1]:8.3f}{c4[2]:8.3f}  1.00  0.00      A    C"
-        )
-        lines.append(
-            f"ATOM  {3 * i + 3:5d}  C1' {res} A{i + 1:4d}    "
-            f"{c1[0]:8.3f}{c1[1]:8.3f}{c1[2]:8.3f}  1.00  0.00      A    C"
-        )
+            hint = _direction(p0, pts[partner])
+        atoms = _backbone_points(p0, p1, hint)
+        res = _AA.get(seq[i], "A")
+        for (name, elem, _offset), xyz in zip(_BACKBONE_ATOMS, atoms):
+            serial += 1
+            lines.append(
+                f"ATOM  {serial:5d} {' ' + name:<4s} {res:<3s} A{i + 1:4d}    "
+                f"{xyz[0]:8.3f}{xyz[1]:8.3f}{xyz[2]:8.3f}  1.00  0.00"
+                f"{' ' * 10}{elem:>2s}"
+            )
     lines.append("END")
     return "\n".join(lines) + "\n"
 
@@ -236,7 +312,9 @@ def _run_external(seq: str, structure: str) -> Optional[str]:
 # 缓存
 # --------------------------------------------------------------------------- #
 def _cache_key(seq: str, structure: str, engine: str) -> str:
-    raw = f"{engine}\x00{seq}\x00{structure}".encode()
+    # 内置建模器改动算法后必须让旧缓存失效，否则用户会继续看到旧模型
+    version = f"v{_BUILTIN_VERSION}" if engine == "builtin" else "external"
+    raw = f"{engine}:{version}\x00{seq}\x00{structure}".encode()
     return hashlib.sha1(raw).hexdigest()
 
 
