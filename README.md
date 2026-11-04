@@ -12,7 +12,7 @@
 - ✅ 阶段 4：`/tertiary` 预置 PDB 库命中 + RCSB PDB 序列相似度检索 + RNAComposer 手动桥接
 - ✅ 阶段 5：Vue3 + Vite 前端五视图（首页 / 折叠 / 突变 / 深度 / 3D）
 - ✅ 阶段 0/3（深度层）：RNA-FM 逐位置嵌入 + 突变嵌入偏移（异步任务 + 缓存；已用真实权重验证 640 维；无 torch 时自动降级为确定性特征嵌入）
-- ✅ 自动化测试：`tests/` 覆盖折叠/配对概率/突变/深度任务/缓存淘汰/RCSB 检索/限流（52 项）；前端 `node --test` 覆盖序列规范化（5 项）；GitHub Actions 跑后端测试 + 前端测试 + 构建
+- ✅ 自动化测试：`tests/` 覆盖折叠/配对概率/突变/深度任务/缓存淘汰/RCSB 检索/限流/单进程守卫/代理 IP（54 项）；前端 `node --test` 覆盖序列规范化（5 项）；GitHub Actions 跑后端测试 + 前端测试 + 构建
 - ✅ 单容器部署：Dockerfile 多阶段构建前端并由 FastAPI 静态托管（默认与 `INSTALL_DEEP=1` 两种镜像均已实测）
 - ⬜ 待办：RNAComposer 自动提交（官方无公开 REST API，仅能手动粘贴）、forna/Mol* 组件化
 
@@ -45,8 +45,8 @@ pip install -r requirements-deep.txt
 
 首次分析若需加载/下载权重，`/api/health` 的 `deep_note` 会提前提示，任务轮询返回 `stage`（如“正在下载 RNA-FM 权重…”），前端据此展示阶段文案并把超时上限放宽到 10 分钟。
 
-> 已在本机验证：`torch 2.5.1+cpu` + `transformers 4.46.3` + `multimolecule 0.0.8`，`/api/health` 返回 `deep_engine: "rna-fm"`，9 nt 嵌入 640 维；76 nt tRNA 首次约 19 s（含模型加载），缓存命中约 0.5 s。
-> 注意不要升级到 transformers ≥ 4.56：它要求 torch ≥ 2.6 才能加载 `.bin` 检查点。
+> 已在本机与容器内验证：`torch 2.5.1+cpu` + `transformers 4.46.3` + `multimolecule 0.0.8`，`/api/health` 返回 `deep_engine: "rna-fm"`，9 nt 嵌入 640 维；76 nt tRNA 首次约 19 s（含模型加载），缓存命中约 0.5 s。容器内首次 9 nt 约 10.5 s。
+> 不要放开这两个锁：transformers ≥ 4.56 要求 torch ≥ 2.6 才能加载 `.bin` 检查点；multimolecule 0.2.x 依赖新版 transformers 的 `initialization`/tokenizer 注册接口，会报 `Tokenizer class RnaTokenizer does not exist` 并静默降级。
 
 ### 前端（Vue3 + Vite + ECharts）
 
