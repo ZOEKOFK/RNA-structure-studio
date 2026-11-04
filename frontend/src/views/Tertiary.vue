@@ -10,6 +10,8 @@ const examples = ref([])
 const result = ref(null)
 const loading = ref(false)
 const error = ref('')
+const selectedPdb = ref('')
+const copied = ref(false)
 
 const normalized = computed(() => normalizeSequence(sequence.value))
 
@@ -35,16 +37,54 @@ function fill(ex) {
   run()
 }
 
-const viewerUrl = computed(() => {
-  const pdb = result.value && result.value.pdb
-  return pdb ? `https://molstar.org/viewer/?pdb=${pdb}` : ''
-})
+const viewerPdb = computed(
+  () => selectedPdb.value || (result.value && result.value.pdb) || ''
+)
+
+const viewerUrl = computed(() =>
+  viewerPdb.value ? `https://molstar.org/viewer/?pdb=${viewerPdb.value}` : ''
+)
+
+function pickSimilar(item) {
+  selectedPdb.value = item.pdb_id
+}
+
+function resolutionText(res) {
+  if (Array.isArray(res)) return res.length ? `${res[0]} Å` : '未知'
+  return res ? `${res} Å` : '未知'
+}
+
+function scoreText(score) {
+  return score == null ? '' : `相似度 ${(score * 100).toFixed(0)}%`
+}
+
+async function copyBridge() {
+  const text = result.value && result.value.rnacomposer && result.value.rnacomposer.input
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch (e) {
+    // 非 https / 旧浏览器降级：选中隐藏 textarea 后 execCommand
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  }
+  copied.value = true
+  setTimeout(() => { copied.value = false }, 2000)
+}
 
 async function run() {
   if (!normalized.value) return
   loading.value = true
   error.value = ''
   result.value = null
+  selectedPdb.value = ''
+  copied.value = false
   try {
     result.value = await api.tertiary(normalized.value)
   } catch (e) {
@@ -60,8 +100,8 @@ async function run() {
     <div class="card">
       <h1>三维结构查看（Mol*）</h1>
       <p class="muted">
-        输入序列先与预置结构库比对，命中即刻展示已知 3D 结构；
-        未命中则提示接入 RNAComposer API（方案阶段 4）。
+        先比对预置结构库；未命中时用 RCSB PDB 检索序列相似度 ≥90% 的已解析实验结构；
+        仍无结果则生成 RNAComposer 输入文本，在官方网页手动预测。
       </p>
       <textarea v-model="sequence" placeholder="输入 RNA 序列，或点击下方实例…"></textarea>
       <div style="margin-top: 10px; display: flex; gap: 10px;">
@@ -85,21 +125,85 @@ async function run() {
       <div class="card">
         <h2>查询结果</h2>
         <template v-if="result.matched">
-          <span class="tag">命中</span><strong>{{ result.name }}</strong>
+          <span class="tag">命中预置库</span><strong>{{ result.name }}</strong>
           <span class="badge">PDB {{ result.pdb }}</span>
           <p class="hint">{{ result.annotation }}</p>
-          <iframe
-            v-if="viewerUrl"
-            :src="viewerUrl"
-            style="width: 100%; height: 560px; border: 1px solid var(--border); border-radius: 8px; margin-top: 10px;"
-            allowfullscreen
-          ></iframe>
-          <p class="hint">3D 视图由 Mol* Viewer 提供，数据来自 RCSB PDB。</p>
         </template>
         <template v-else>
+          <span class="tag">
+            {{ result.source === 'rcsb' ? 'RCSB 相似结构' : '未找到实验结构' }}
+          </span>
           <p>{{ result.message }}</p>
+          <p v-if="result.rcsb_error" class="hint">RCSB 错误：{{ result.rcsb_error }}</p>
         </template>
+
+        <iframe
+          v-if="viewerUrl"
+          :src="viewerUrl"
+          style="width: 100%; height: 560px; border: 1px solid var(--border); border-radius: 8px; margin-top: 10px;"
+          allowfullscreen
+        ></iframe>
+        <p v-if="viewerUrl" class="hint">
+          3D 视图由 Mol* Viewer 提供（当前 PDB {{ viewerPdb }}），数据来自 RCSB PDB。
+        </p>
+      </div>
+
+      <div v-if="result.similar && result.similar.length" class="card">
+        <h2>相似实验结构</h2>
+        <p class="hint">序列相似度 ≥90%，点击任一条切换上方 3D 视图。</p>
+        <div class="row">
+          <div v-for="item in result.similar" :key="item.pdb_id" class="col">
+            <button
+              class="secondary"
+              style="width: 100%;"
+              :style="viewerPdb === item.pdb_id ? 'border-color: var(--accent, #4f8); font-weight: 600;' : ''"
+              @click="pickSimilar(item)"
+            >{{ item.pdb_id }}</button>
+            <div class="hint">
+              {{ item.title || '（无标题）' }}<br />
+              {{ resolutionText(item.resolution) }} · {{ item.method || '未知方法' }}<br />
+              {{ scoreText(item.score) }}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="result.rnacomposer" class="card">
+        <h2>用 RNAComposer 预测（手动）</h2>
+        <p class="muted">
+          RNAComposer 无公开 REST API，需在官方网页粘贴输入：
+          第 1 行任务名、第 2 行序列，第 3 行 dot-bracket 结构（可选）。
+        </p>
+        <pre class="bridge">{{ result.rnacomposer.input }}</pre>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+          <button class="secondary" @click="copyBridge">{{ copied ? '已复制' : '复制输入' }}</button>
+          <a
+            :href="result.rnacomposer.url"
+            target="_blank"
+            rel="noopener noreferrer"
+            style="text-decoration: none;"
+          >
+            <button>打开 RNAComposer</button>
+          </a>
+        </div>
+        <p class="hint">在官网运行后下载 PDB，可再用 Mol* 打开该文件查看。</p>
       </div>
     </template>
   </div>
 </template>
+
+<style scoped>
+.bridge {
+  background: var(--panel-2, #212c42);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 220px;
+  margin: 10px 0;
+}
+</style>

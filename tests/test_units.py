@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from backend import rna_fm, rna_fold
+from backend import composer_api, rcsb, rna_fm, rna_fold
 
 
 # --------------------------------------------------------------------------- #
@@ -180,3 +180,60 @@ def test_cache_payload_has_engine_and_structure(monkeypatch, tmp_path):
     assert payload["engine"] == "fallback"
     assert payload["structure"] == "(((...)))"
     assert payload["dim"] == 34
+
+
+# --------------------------------------------------------------------------- #
+# RCSB 序列检索 / RNAComposer 输入
+# --------------------------------------------------------------------------- #
+def test_rcsb_search_parses_hits_and_caches(monkeypatch):
+    rcsb._CACHE.clear()
+    calls = {"count": 0}
+
+    def fake_post(url, payload, timeout):
+        calls["count"] += 1
+        return {
+            "result_set": [
+                {"identifier": "1EHZ", "score": 1.0},
+                {"identifier": "1EVV", "score": 0.95},
+            ]
+        }
+
+    monkeypatch.setattr(rcsb, "_post_json", fake_post)
+    monkeypatch.setattr(
+        rcsb,
+        "_get_json",
+        lambda url, timeout: {
+            "struct": {"title": "tRNA"},
+            "rcsb_entry_info": {"resolution_combined": [2.0], "experimental_method": "X-ray"},
+        },
+    )
+
+    seq = "ACGUACGUACGUACGU"
+    hits = rcsb.search_similar(seq)
+    assert [h["pdb_id"] for h in hits] == ["1EHZ", "1EVV"]
+    assert hits[0]["resolution"] == 2.0
+    assert hits[0]["method"] == "X-ray"
+    assert hits[0]["url"] == "https://www.rcsb.org/structure/1EHZ"
+
+    rcsb.search_similar(seq)
+    assert calls["count"] == 1, "第二次查询应命中缓存"
+    rcsb._CACHE.clear()
+
+
+def test_rcsb_failure_is_not_cached(monkeypatch):
+    rcsb._CACHE.clear()
+    seq = "ACGUACGUACGUACGU"
+
+    def boom(url, payload, timeout):
+        raise TimeoutError("network down")
+
+    monkeypatch.setattr(rcsb, "_post_json", boom)
+    with pytest.raises(TimeoutError):
+        rcsb.search_similar(seq)
+    assert seq not in rcsb._CACHE
+
+
+def test_composer_input_format():
+    text = composer_api.build_input("GGGAAACCC", "(((...)))")
+    assert text.splitlines() == [">rna", "GGGAAACCC", "(((...)))"]
+    assert composer_api.build_input("GGGAAACCC") == ">rna\nGGGAAACCC"

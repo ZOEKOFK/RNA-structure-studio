@@ -9,12 +9,12 @@
 - ✅ **阶段 0（部分）**：ViennaRNA 2.7.0 已通过 pip wheel 安装并验证（真实 kcal/mol MFE + 配分函数 bpp）
 - ✅ 阶段 2：二级结构服务（`/fold` + `/pairprob`）
 - ✅ 阶段 3：突变对比（`/mutate`，ΔMFE + 配对差异）
-- ✅ 阶段 4（预置库部分）：`/tertiary` 命中预置 PDB 库，Mol* 在线查看
+- ✅ 阶段 4：`/tertiary` 预置 PDB 库命中 + RCSB PDB 序列相似度检索 + RNAComposer 手动桥接
 - ✅ 阶段 5：Vue3 + Vite 前端五视图（首页 / 折叠 / 突变 / 深度 / 3D）
 - ✅ 阶段 0/3（深度层）：RNA-FM 逐位置嵌入 + 突变嵌入偏移（异步任务 + 缓存；已用真实权重验证 640 维；无 torch 时自动降级为确定性特征嵌入）
-- ✅ 自动化测试：`tests/` 覆盖折叠/配对概率/突变/深度任务与缓存淘汰（39 项）
+- ✅ 自动化测试：`tests/` 覆盖折叠/配对概率/突变/深度任务/缓存淘汰/RCSB 检索（45 项）
 - ✅ 单容器部署：Dockerfile 多阶段构建前端并由 FastAPI 静态托管
-- ⬜ 待办：RNAComposer API（需官方服务权限）、forna/Mol* 组件化
+- ⬜ 待办：RNAComposer 自动提交（官方无公开 REST API，仅能手动粘贴）、forna/Mol* 组件化
 
 ## 快速开始
 
@@ -113,7 +113,7 @@ docker compose up -d
 | POST | `/api/fold` | `{sequence}` → dot-bracket + MFE + 碱基对（支持 FASTA / DNA 的 T 自动转 U） |
 | POST | `/api/pairprob` | `{sequence}` → 配对概率矩阵（≤300 nt） |
 | POST | `/api/mutate` | `{sequence, position, base}` → ΔMFE + 配对差异 |
-| POST | `/api/tertiary` | `{sequence}` → 匹配预置 PDB / 提示 |
+| POST | `/api/tertiary` | `{sequence}` → 预置 PDB 命中 / RCSB 相似结构 / RNAComposer 输入 |
 | POST | `/api/deep/embed` | `{sequence}` → `{job_id}`（逐位置嵌入，异步，≤300 nt） |
 | POST | `/api/deep/mutate` | `{sequence, position, base}` → `{job_id}`（嵌入偏移，异步） |
 | GET | `/api/deep/jobs/{job_id}` | 任务状态 / 进度 / 排队位置 / 结果（`queued → running → done / error / cancelled`） |
@@ -127,7 +127,7 @@ docker compose up -d
 - 折叠视图：MFE 卡片、结构统计、自绘弧线图（GC/AU/GU 配色 + 图例）、ECharts 配对概率热力图、复制 dot-bracket、下载 JSON 结果、示例快速切换
 - 突变对比：位点滑杆、参考碱基提示、ΔMFE 稳定性趋势（↑/↓）、野生型/突变型双结构图、断裂/新增碱基对
 - 深度分析：逐位置嵌入（PCA 轨迹 + 嵌入强度曲线）、突变嵌入偏移条形图（标注突变位）、WT/MT 嵌入空间对比；异步轮询进度条、排队位置提示、任务取消、结果导出 JSON
-- 3D 视图：预置 PDB 命中即嵌入 Mol* Viewer（`molstar.org/viewer/?pdb=…`）
+- 3D 视图：命中预置 PDB → 直接嵌入 Mol* Viewer；未命中 → RCSB PDB 按序列相似度（≥90%）列出已解析实验结构，点击任意一条切换 Mol* 视图；同时生成 RNAComposer 输入（任务名 / 序列 / dot-bracket），可一键复制并跳转官网手动预测
 - 全局提示：后端不可达或 5xx 时右下角弹出错误提示（4xx 由各页面就地展示原因）
 
 ## 预置示例库
@@ -154,7 +154,8 @@ rna-fold/
 │   ├── main.py            # FastAPI 接口
 │   ├── rna_fold.py        # 折叠引擎（绑定 / CLI / 纯 Python 三级）
 │   ├── rna_fm.py          # RNA-FM 深度层（真实模型 / 降级嵌入、异步任务、缓存）
-│   └── composer_api.py    # RNAComposer 占位（阶段 4）
+│   ├── rcsb.py            # RCSB PDB 序列相似度检索（公开 Search API，无需 key）
+│   └── composer_api.py    # RNAComposer 手动桥接（生成可粘贴的输入文本）
 ├── data/
 │   ├── examples/examples.json
 │   └── cache/embeddings/  # 按序列哈希缓存的嵌入向量（LRU 上限 500）
@@ -172,6 +173,6 @@ rna-fold/
 
 ## 后续路线
 
-- 阶段 4：接入 RNAComposer（需注册学术 key，当前 `/api/tertiary` 仅命中预置 PDB 库）
+- 阶段 4：RNAComposer 自动提交（官方**无公开 REST API、无 API key**，交互模式匿名可用 ≤500 nt，当前以“生成输入 → 官网手动预测”方式覆盖）
 - 阶段 5：forna 交互圈图（可选，替换自绘弧线图）、Mol* 由 iframe 改为嵌入式组件
-- 可选增强：按序列相似度检索 RCSB PDB，扩大 3D 命中率
+- 可选增强：RCSB 检索结果缓存与自定义相似度阈值（当前固定 ≥90%、内存 LRU 100 条）

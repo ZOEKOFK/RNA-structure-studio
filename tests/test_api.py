@@ -101,10 +101,61 @@ def test_tertiary_matches_prebuilt_example():
     assert data["pdb"] == target["pdb"]
 
 
-def test_tertiary_unmatched_returns_message():
+def test_tertiary_unmatched_returns_message(monkeypatch):
+    monkeypatch.setattr("backend.rcsb.search_similar", lambda seq: [])
     res = client.post("/api/tertiary", json={"sequence": "GGGAAACCCGGGAAACCC"})
     assert res.status_code == 200
-    assert res.json()["matched"] is False
+    data = res.json()
+    assert data["matched"] is False
+    assert data["similar"] == []
+    assert "RNAComposer" in data["message"]
+    assert data["structure"]
+    assert data["rnacomposer"]["url"].startswith("https://rnacomposer")
+
+
+def test_tertiary_returns_rcsb_similar_structures(monkeypatch):
+    hits = [
+        {
+            "pdb_id": "1EHZ",
+            "score": 1.0,
+            "title": "酵母苯丙氨酸 tRNA 晶体结构",
+            "resolution": 1.93,
+            "method": "X-ray",
+            "url": "https://www.rcsb.org/structure/1EHZ",
+        }
+    ]
+    monkeypatch.setattr("backend.rcsb.search_similar", lambda seq: hits)
+    res = client.post("/api/tertiary", json={"sequence": "GGGAAACCCGGGAAACCC"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["source"] == "rcsb"
+    assert data["pdb"] == "1EHZ"
+    assert data["similar"][0]["resolution"] == 1.93
+
+
+def test_tertiary_degrades_when_rcsb_unavailable(monkeypatch):
+    def boom(seq):
+        raise TimeoutError("network down")
+
+    monkeypatch.setattr("backend.rcsb.search_similar", boom)
+    res = client.post("/api/tertiary", json={"sequence": "GGGAAACCCGGGAAACCC"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["matched"] is False
+    assert data["similar"] == []
+    assert "TimeoutError" in data["rcsb_error"]
+
+
+def test_tertiary_prebuilt_includes_structure_and_bridge():
+    examples = client.get("/api/examples").json()["examples"]
+    target = next((ex for ex in examples if ex.get("pdb")), None)
+    if target is None:
+        pytest.skip("示例库中没有带 PDB 的分子")
+    res = client.post("/api/tertiary", json={"sequence": target["sequence"]})
+    data = res.json()
+    assert data["matched"] is True
+    assert data["structure"].count("(") == data["structure"].count(")")
+    assert data["rnacomposer"]["input"].splitlines()[1] == target["sequence"]
 
 
 # --------------------------------------------------------------------------- #

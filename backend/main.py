@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from . import rna_fold, rna_fm
+from . import composer_api, rcsb, rna_fold, rna_fm
 
 logging.basicConfig(
     level=os.environ.get("RNA_LOG_LEVEL", "INFO").upper(),
@@ -33,7 +33,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_RNACOMPOSER_MAX_LEN = 300   # 3D 预测限长（RNAComposer 服务端限制）
+_RNACOMPOSER_MAX_LEN = composer_api.RNACOMPOSER_MAX_LEN   # RNAComposer 官方交互模式限长（500 nt）
 
 
 class FoldRequest(BaseModel):
@@ -169,6 +169,17 @@ def tertiary(req: TertiaryRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # dot-bracket 用于配套展示与 RNAComposer 输入；结构预测失败不阻断 3D 查询
+    try:
+        structure = rna_fold.fold(seq)["structure"] if len(seq) <= _RNACOMPOSER_MAX_LEN else ""
+    except Exception:
+        structure = ""
+
+    bridge = {
+        "url": composer_api.RNACOMPOSER_URL,
+        "input": composer_api.build_input(seq, structure or None),
+    }
+
     for ex in _load_examples():
         if rna_fold.normalize_sequence(ex.get("sequence", "")) == seq:
             return {
@@ -177,18 +188,54 @@ def tertiary(req: TertiaryRequest):
                 "name": ex.get("name"),
                 "pdb": ex.get("pdb"),
                 "annotation": ex.get("annotation"),
+                "sequence": seq,
+                "structure": structure,
+                "similar": [],
+                "rcsb_error": None,
+                "rnacomposer": bridge,
                 "message": "命中预置结构库，直接展示已知 3D 结构。",
             }
 
-    if len(seq) <= _RNACOMPOSER_MAX_LEN:
-        message = (
-            "未命中预置结构库。接入 RNAComposer API（backend/composer_api.py）"
-            "后即可在线预测；当前先展示预置示例分子。"
-        )
-    else:
-        message = f"未命中预置结构库，且长度 {len(seq)} nt 超过 3D 预测限长 {_RNACOMPOSER_MAX_LEN} nt。"
+    # 未命中预置库：用 RCSB PDB 公开 Search API 找相似的实验结构（无需 key）
+    similar: List[dict] = []
+    rcsb_error: Optional[str] = None
+    if 10 <= len(seq) <= _RNACOMPOSER_MAX_LEN:
+        try:
+            similar = rcsb.search_similar(seq)
+        except Exception as e:  # 网络不可达 / 服务异常时降级为手动桥接
+            rcsb_error = f"{type(e).__name__}: {e}"
+            logger.warning("RCSB 序列检索失败: %s", rcsb_error)
 
-    return {"matched": False, "source": None, "pdb": None, "message": message}
+    if similar:
+        source = "rcsb"
+        message = (
+            f"未命中预置结构库；RCSB PDB 找到 {len(similar)} 条相似实验结构"
+            f"（序列相似度 ≥90%）。"
+        )
+    elif len(seq) > _RNACOMPOSER_MAX_LEN:
+        source = None
+        message = (
+            f"未命中预置结构库，且长度 {len(seq)} nt 超过 3D 检索/预测限长 "
+            f"{_RNACOMPOSER_MAX_LEN} nt。"
+        )
+    elif rcsb_error:
+        source = None
+        message = "未命中预置结构库；RCSB 检索暂不可用，可复制下方输入到 RNAComposer 手动预测。"
+    else:
+        source = None
+        message = "未命中预置结构库，RCSB 中也没有 ≥90% 相似的实验结构；可用 RNAComposer 手动预测。"
+
+    return {
+        "matched": False,
+        "source": source,
+        "pdb": similar[0]["pdb_id"] if similar else None,
+        "sequence": seq,
+        "structure": structure,
+        "similar": similar,
+        "rcsb_error": rcsb_error,
+        "rnacomposer": bridge,
+        "message": message,
+    }
 
 
 @app.post("/api/deep/embed")
