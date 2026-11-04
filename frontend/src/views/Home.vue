@@ -1,7 +1,8 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
+import { normalizeSequence, degenerateBases } from '../sequence'
 
 const router = useRouter()
 const sequence = ref('')
@@ -9,50 +10,56 @@ const examples = ref([])
 const engine = ref('')
 const version = ref('')
 const error = ref('')
-const maxLen = 1000
-const maxDeep = 300
+const maxLen = ref(1000)
+const maxDeep = ref(300)
 
 onMounted(async () => {
   try {
     const [h, e] = await Promise.all([api.health(), api.examples()])
     engine.value = h.rnafold_available ? 'ViennaRNA（真实能量模型）' : '纯 Python 降级引擎'
     version.value = h.viennarna_version || ''
+    maxLen.value = h.max_sequence_len || maxLen.value
+    maxDeep.value = h.deep_max_len || maxDeep.value
     examples.value = e.examples
   } catch (e) {
     error.value = '后端未启动，请先运行 uvicorn backend.main:app --port 8000'
   }
 })
 
-function normalize(v) {
-  return v.toUpperCase().replace(/T/g, 'U').replace(/[^AUCG]/g, '')
-}
+const seq = computed(() => normalizeSequence(sequence.value))
+const degenerate = computed(() => degenerateBases(seq.value))
+const invalid = computed(() => !!degenerate.value)
 
-function goFold(seq) {
-  const s = normalize(seq !== undefined ? seq : sequence.value)
+function goFold(seqOverride) {
+  if (invalid.value) return
+  const s = normalizeSequence(seqOverride !== undefined ? seqOverride : sequence.value)
   if (!s) return
-  if (s.length > maxLen) {
-    error.value = `长度 ${s.length} nt 超过实时折叠限长 ${maxLen} nt`
+  if (s.length > maxLen.value) {
+    error.value = `长度 ${s.length} nt 超过实时折叠限长 ${maxLen.value} nt`
     return
   }
   router.push({ path: '/fold', query: { seq: s } })
 }
 
-function goMutate(seq) {
-  const s = normalize(seq !== undefined ? seq : sequence.value)
+function goMutate(seqOverride) {
+  if (invalid.value) return
+  const s = normalizeSequence(seqOverride !== undefined ? seqOverride : sequence.value)
   if (!s) return
   router.push({ path: '/mutate', query: { seq: s } })
 }
 
-function goTertiary(seq) {
-  const s = normalize(seq !== undefined ? seq : sequence.value)
+function goTertiary(seqOverride) {
+  if (invalid.value) return
+  const s = normalizeSequence(seqOverride !== undefined ? seqOverride : sequence.value)
   router.push({ path: '/tertiary', query: s ? { seq: s } : {} })
 }
 
-function goDeep(seq) {
-  const s = normalize(seq !== undefined ? seq : sequence.value)
+function goDeep(seqOverride) {
+  if (invalid.value) return
+  const s = normalizeSequence(seqOverride !== undefined ? seqOverride : sequence.value)
   if (!s) return
-  if (s.length > maxDeep) {
-    error.value = `长度 ${s.length} nt 超过深度分析限长 ${maxDeep} nt`
+  if (s.length > maxDeep.value) {
+    error.value = `长度 ${s.length} nt 超过深度分析限长 ${maxDeep.value} nt`
     return
   }
   router.push({ path: '/deep', query: { seq: s } })
@@ -72,14 +79,17 @@ function goDeep(seq) {
         v-model="sequence"
         placeholder="例如：GGGAAACCC 或粘贴一段 tRNA / 5S rRNA 序列…"
       ></textarea>
-      <div class="hint">{{ normalize(sequence).length }} nt</div>
+      <div class="hint">{{ seq.length }} nt</div>
+      <p v-if="degenerate" class="error">
+        含简并碱基 {{ degenerate }}，无法预测结构；请展开为 A/U/C/G
+      </p>
       <p v-if="error" class="error">{{ error }}</p>
       <div style="margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-        <button :disabled="!normalize(sequence).length || normalize(sequence).length > maxLen" @click="goFold()">
+        <button :disabled="invalid || !seq.length || seq.length > maxLen" @click="goFold()">
           预测二级结构 →
         </button>
-        <button class="secondary" @click="goMutate()">突变对比</button>
-        <button class="secondary" @click="goDeep()">深度分析</button>
+        <button class="secondary" :disabled="invalid || !seq.length" @click="goMutate()">突变对比</button>
+        <button class="secondary" :disabled="invalid || !seq.length" @click="goDeep()">深度分析</button>
       </div>
     </div>
 

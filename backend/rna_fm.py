@@ -23,12 +23,24 @@ from typing import Dict, List, Optional, Tuple
 
 from . import rna_fold
 
-MAX_DEEP_LEN = 300           # 深度分析限长（CPU 推理延迟控制）
+
+def _env_int(name: str, default: int) -> int:
+    """读取整型环境变量，非法值回退默认值。"""
+    try:
+        value = int(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+MAX_DEEP_LEN = _env_int("RNA_MAX_DEEP_LEN", 300)          # 深度分析限长（CPU 推理延迟控制）
 _CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "cache", "embeddings")
+_CACHE_MAX_FILES = _env_int("RNA_CACHE_MAX_FILES", 500)   # 缓存文件上限，超出按最近使用时间淘汰
 _LOCAL_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models", "rnafm")
 _HF_REPO = "multimolecule/rnafm"
 _MODEL_NAME = "RNA-FM (multimolecule/rnafm)"
 
+_CACHE_LOCK = threading.Lock()
 _MODEL_LOCK = threading.Lock()
 _MODEL = None
 _TOKENIZER = None
@@ -67,6 +79,7 @@ def engine_detail() -> dict:
         "deep_max_len": MAX_DEEP_LEN,
         "deep_ready": _MODEL is not None,
         "deep_error": _MODEL_ERROR,
+        "deep_cache_max": _CACHE_MAX_FILES,
     }
 
 
@@ -261,10 +274,37 @@ def _read_cache(seq: str, engine: str) -> Optional[dict]:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         if data.get("sequence") == seq and data.get("engine") == engine:
+            # 刷新访问时间，供 LRU 淘汰判断“最近使用”而非“最近写入”
+            os.utime(path, None)
             return data
     except Exception:
         pass
     return None
+
+
+def _prune_cache() -> None:
+    """缓存文件数超过上限时，删除最久未被读取的文件。"""
+    with _CACHE_LOCK:
+        try:
+            entries = []
+            with os.scandir(_CACHE_DIR) as it:
+                for entry in it:
+                    if entry.is_file() and entry.name.endswith(".json"):
+                        try:
+                            entries.append((entry.stat().st_mtime, entry.path))
+                        except OSError:
+                            pass
+            excess = len(entries) - _CACHE_MAX_FILES
+            if excess <= 0:
+                return
+            entries.sort()
+            for _, path in entries[:excess]:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        except OSError:
+            pass
 
 
 def _write_cache(seq: str, engine: str, structure: str, vectors: List[List[float]]) -> None:
@@ -282,16 +322,19 @@ def _write_cache(seq: str, engine: str, structure: str, vectors: List[List[float
             json.dump(payload, f, ensure_ascii=False)
     except Exception:
         pass
+    _prune_cache()
 
 
 def _cached_vectors(seq: str, engine: str) -> Tuple[Optional[dict], str, Optional[str]]:
     cached = _read_cache(seq, engine)
     if cached:
         return cached, cached.get("structure", ""), "cache"
-    try:
-        vectors, used_engine, structure, reason = _compute_vectors(seq)
-    except Exception:
-        raise
+    vectors, used_engine, structure, reason = _compute_vectors(seq)
+    if used_engine != engine:
+        # 预期引擎加载失败而降级：按实际引擎回读一次，避免历史降级缓存永远不命中
+        cached = _read_cache(seq, used_engine)
+        if cached:
+            return cached, cached.get("structure", ""), "cache"
     _write_cache(seq, used_engine, structure, vectors)
     return {"sequence": seq, "engine": used_engine, "structure": structure,
             "dim": len(vectors[0]) if vectors else 0, "vectors": vectors}, structure, "compute"
@@ -468,7 +511,7 @@ def mutate_shift(sequence: str, position: int, base: str, progress=None) -> dict
 def _update(job_id: str, **kw) -> None:
     with _JOB_LOCK:
         job = _JOBS.get(job_id)
-        if job:
+        if job and job["status"] != "cancelled":
             job.update(kw)
 
 
@@ -482,6 +525,9 @@ def submit(kind: str, fn, *args) -> str:
             _JOBS.pop(_JOB_ORDER.pop(0), None)
 
     def runner():
+        with _JOB_LOCK:
+            if _JOBS.get(job_id, {}).get("status") == "cancelled":
+                return
         _update(job_id, status="running", progress=0.05)
         try:
             result = fn(*args, progress=lambda p: _update(job_id, progress=round(p, 2)))
@@ -493,7 +539,26 @@ def submit(kind: str, fn, *args) -> str:
     return job_id
 
 
+def cancel_job(job_id: str) -> bool:
+    """取消排队中或运行中的任务；已完成的任务不可取消。"""
+    with _JOB_LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job["status"] in ("done", "error", "cancelled"):
+            return False
+        job.update(status="cancelled", progress=1.0, error="任务已取消")
+        return True
+
+
 def get_job(job_id: str) -> Optional[dict]:
     with _JOB_LOCK:
         job = _JOBS.get(job_id)
-        return dict(job) if job else None
+        if not job:
+            return None
+        data = dict(job)
+        if data["status"] == "queued":
+            queued = [jid for jid in _JOB_ORDER
+                      if _JOBS.get(jid, {}).get("status") == "queued"]
+            data["queue_position"] = queued.index(job_id) + 1
+            data["queue_length"] = len(queued)
+        return data
+

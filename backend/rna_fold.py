@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -27,27 +28,50 @@ _BASE_PAIRS = {("A", "U"), ("U", "A"), ("G", "C"), ("C", "G"), ("G", "U"), ("U",
 _PAIR_SCORE = {"GC": 3.0, "CG": 3.0, "AU": 2.0, "UA": 2.0, "GU": 1.0, "UG": 1.0}
 
 MIN_LOOP = 3                 # 发夹环最小未配对碱基数
-MAX_SEQUENCE_LEN = 1000      # 实时折叠限长（防止超长序列 O(n³) 拖垮服务）
-FALLBACK_MAX_LEN = 300       # Nussinov 降级限长
-BOLTZMANN_MAX_LEN = 200      # 配对概率（Boltzmann 采样）降级限长
+
+
+def _env_int(name: str, default: int) -> int:
+    """读取整型环境变量，非法值回退默认值。"""
+    try:
+        value = int(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+MAX_SEQUENCE_LEN = _env_int("RNA_MAX_SEQ_LEN", 1000)      # 实时折叠限长（防 O(n³) 拖垮服务）
+FALLBACK_MAX_LEN = _env_int("RNA_FALLBACK_MAX_LEN", 300)  # Nussinov 降级限长
+BOLTZMANN_MAX_LEN = _env_int("RNA_BOLTZMANN_MAX_LEN", 200) # 配对概率（Boltzmann 采样）降级限长
 BOLTZMANN_SAMPLES = 150      # 采样次数
-BPP_MAX_LEN = 300            # 真实 bpp 限长（JSON 体积控制）
+BPP_MAX_LEN = _env_int("RNA_BPP_MAX_LEN", 300)            # 真实 bpp 限长（JSON 体积控制）
 
 
 # --------------------------------------------------------------------------- #
 # 序列处理
 # --------------------------------------------------------------------------- #
+_DEGENERATE_BASES = set("NRYSWKMBDHV")   # IUPAC 简并碱基，无法直接折叠
+
+
 def normalize_sequence(raw: str) -> str:
-    """去除空白并把 DNA 的 T 转成 RNA 的 U，统一大写。"""
-    return "".join(raw.split()).upper().replace("T", "U")
+    """解析用户输入：支持纯序列或 FASTA（忽略 ``>`` / ``;`` 描述行），
+    统一大写并把 DNA 的 T 转成 RNA 的 U。"""
+    lines = raw.splitlines()
+    if any(line.lstrip().startswith(">") for line in lines):
+        lines = [line for line in lines if not line.lstrip().startswith((">", ";"))]
+    return "".join("".join(lines).split()).upper().replace("T", "U")
 
 
 def validate_sequence(seq: str) -> None:
     if not seq:
-        raise ValueError("序列为空")
+        raise ValueError("序列为空：请粘贴 A/U/C/G 序列或 FASTA 记录")
+    degenerate = sorted({c for c in seq if c in _DEGENERATE_BASES})
+    if degenerate:
+        raise ValueError(
+            f"含简并碱基 {''.join(degenerate)}，无法预测结构；请展开为 A/U/C/G"
+        )
     bad = sorted({c for c in seq if c not in "AUCG"})
     if bad:
-        raise ValueError(f"含有非法碱基: {bad}")
+        raise ValueError(f"含有非法字符 {''.join(bad)}，仅支持 A/U/C/G（DNA 的 T 会自动转成 U）")
 
 
 def _can_pair(i: int, j: int, seq: str) -> bool:

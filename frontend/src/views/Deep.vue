@@ -1,13 +1,14 @@
 ﻿<script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
-import * as echarts from 'echarts'
+import echarts from '../echarts'
 import { api } from '../api'
+import { normalizeSequence } from '../sequence'
 
-const LIMIT = 300
+const limit = ref(300)
 const route = useRoute()
 
-const sequence = ref(normalize(route.query.seq || ''))
+const sequence = ref(normalizeSequence(route.query.seq || ''))
 const examples = ref([])
 const selectedExample = ref('')
 const engineState = ref({ engine: 'fallback', error: null })
@@ -17,6 +18,8 @@ const progress = ref(0)
 const error = ref('')
 const embed = ref(null)
 const mut = ref(null)
+const jobId = ref('')
+const queueHint = ref('')
 
 const position = ref(1)
 const base = ref('A')
@@ -33,31 +36,64 @@ const engineLabel = computed(() =>
   engineState.value.engine === 'rna-fm' ? 'RNA-FM（真实深度模型）' : '序列+结构特征（降级嵌入）'
 )
 
-function normalize(s) {
-  return (s || '').toUpperCase().replace(/T/g, 'U').replace(/[^AUCG]/g, '')
-}
-
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
 }
 
 async function waitJob(id) {
+  jobId.value = id
   const started = Date.now()
-  while (Date.now() - started < 60000) {
-    const job = await api.deepJob(id)
-    progress.value = job.progress || 0
-    if (job.status === 'done') return job.result
-    if (job.status === 'error') throw new Error(job.error || '任务失败')
-    await sleep(250)
+  try {
+    while (Date.now() - started < 120000) {
+      const job = await api.deepJob(id)
+      progress.value = job.progress || 0
+      if (job.status === 'queued' && job.queue_position) {
+        queueHint.value = `排队中：第 ${job.queue_position} / ${job.queue_length} 位`
+      } else {
+        queueHint.value = ''
+      }
+      if (job.status === 'done') return job.result
+      if (job.status === 'cancelled') throw new Error('任务已取消')
+      if (job.status === 'error') throw new Error(job.error || '任务失败')
+      await sleep(250)
+    }
+  } finally {
+    queueHint.value = ''
   }
   throw new Error('任务超时，请重试（长序列 CPU 推理可能较慢）')
 }
 
+async function cancelJob() {
+  if (!jobId.value) return
+  try {
+    await api.deepCancel(jobId.value)
+  } catch {
+    // 任务已结束时忽略
+  }
+}
+
+function downloadJson(payload, filename) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+function exportEmbed() {
+  if (embed.value) downloadJson(embed.value, 'rna_embedding.json')
+}
+
+function exportMut() {
+  if (mut.value) downloadJson(mut.value, 'rna_mutation_embedding.json')
+}
+
 async function computeEmbed() {
-  const seq = normalize(sequence.value)
+  const seq = normalizeSequence(sequence.value)
   if (!seq) return
-  if (seq.length > LIMIT) {
-    error.value = `深度分析限长 ${LIMIT} nt（当前 ${seq.length} nt）`
+  if (seq.length > limit.value) {
+    error.value = `深度分析限长 ${limit.value} nt（当前 ${seq.length} nt）`
     return
   }
   loading.value = true
@@ -79,10 +115,10 @@ async function computeEmbed() {
 }
 
 async function computeMutate() {
-  const seq = normalize(sequence.value)
+  const seq = normalizeSequence(sequence.value)
   if (!seq) return
-  if (seq.length > LIMIT) {
-    error.value = `深度分析限长 ${LIMIT} nt（当前 ${seq.length} nt）`
+  if (seq.length > limit.value) {
+    error.value = `深度分析限长 ${limit.value} nt（当前 ${seq.length} nt）`
     return
   }
   if (position.value < 1 || position.value > seq.length) {
@@ -259,7 +295,7 @@ function handleResize() {
 function loadExample() {
   const ex = examples.value.find((e) => e.id === selectedExample.value)
   if (!ex) return
-  sequence.value = normalize(ex.sequence)
+  sequence.value = normalizeSequence(ex.sequence)
   position.value = 1
   base.value = 'A'
   embed.value = null
@@ -271,7 +307,8 @@ onMounted(async () => {
   try {
     const [h, e] = await Promise.all([api.health(), api.examples()])
     engineState.value = { engine: h.deep_engine || 'fallback', error: h.deep_error || null }
-    examples.value = e.examples.filter((x) => normalize(x.sequence).length <= LIMIT)
+    limit.value = h.deep_max_len || limit.value
+    examples.value = e.examples.filter((x) => normalizeSequence(x.sequence).length <= limit.value)
   } catch {
     error.value = '后端未启动，请先运行 uvicorn backend.main:app --port 8000'
   }
@@ -289,7 +326,7 @@ onBeforeUnmount(() => {
     <div class="card">
       <h1>RNA-FM 深度分析</h1>
       <p class="muted" style="margin-top: 0;">
-        引擎：<strong>{{ engineLabel }}</strong>。逐位置嵌入 + 突变嵌入偏移，限长 {{ LIMIT }} nt。
+        引擎：<strong>{{ engineLabel }}</strong>。逐位置嵌入 + 突变嵌入偏移，限长 {{ limit }} nt。
       </p>
 
       <div class="row" style="align-items: flex-end;">
@@ -314,12 +351,14 @@ onBeforeUnmount(() => {
       <div class="hint">{{ seqLen }} nt</div>
 
       <div class="actions">
-        <button :disabled="loading || !seqLen || seqLen > LIMIT" @click="computeEmbed">
+        <button :disabled="loading || !seqLen || seqLen > limit" @click="computeEmbed">
           {{ loading ? '计算中…' : '计算逐位置嵌入' }}
         </button>
+        <button v-if="loading" class="secondary" @click="cancelJob">取消任务</button>
       </div>
 
       <div v-if="loading" class="progress"><div :style="{ width: (progress * 100) + '%' }"></div></div>
+      <p v-if="queueHint" class="hint">{{ queueHint }}</p>
       <p v-if="error" class="error">{{ error }}</p>
 
       <div v-if="embed" class="row stats">
@@ -327,6 +366,9 @@ onBeforeUnmount(() => {
         <div class="col"><span class="tag">位点数</span><br />{{ embed.length }}</div>
         <div class="col"><span class="tag">模型</span><br />{{ embed.model }}</div>
         <div class="col"><span class="tag">结果来源</span><br />{{ embed.source === 'cache' ? '缓存' : '实时计算' }}</div>
+        <div class="col" style="flex: 0 0 auto;">
+          <button class="secondary" @click="exportEmbed">导出嵌入 JSON</button>
+        </div>
       </div>
       <p v-if="embed && embed.fallback_reason" class="hint">
         降级原因：{{ embed.fallback_reason }}。安装 torch + transformers 并将权重放到
@@ -361,10 +403,12 @@ onBeforeUnmount(() => {
         <div class="col"><span class="tag">参考碱基</span><br /><span class="mono">{{ currentBase || '—' }}</span></div>
         <div class="col" style="flex: 0 0 auto;">
           <button class="secondary" :disabled="loading || !seqLen" @click="computeMutate">计算偏移</button>
+          <button v-if="loading" class="secondary" style="margin-left: 6px;" @click="cancelJob">取消</button>
         </div>
       </div>
 
       <div v-if="loading" class="progress" style="margin-top: 12px;"><div :style="{ width: (progress * 100) + '%' }"></div></div>
+      <p v-if="queueHint && loading" class="hint">{{ queueHint }}</p>
       <p v-if="error" class="error">{{ error }}</p>
 
       <div v-if="mut" class="row stats">
@@ -372,6 +416,9 @@ onBeforeUnmount(() => {
         <div class="col"><span class="tag">最大偏移位点</span><br />{{ mut.max_shift_position }}（{{ mut.max_shift }}）</div>
         <div class="col"><span class="tag">受影响 Top5</span><br />{{ mut.top_positions.join(', ') }}</div>
         <div class="col"><span class="tag">嵌入维度</span><br />{{ mut.dim }}</div>
+        <div class="col" style="flex: 0 0 auto;">
+          <button class="secondary" @click="exportMut">导出偏移 JSON</button>
+        </div>
       </div>
 
       <template v-if="mut">

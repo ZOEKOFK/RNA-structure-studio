@@ -1,17 +1,15 @@
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import * as echarts from 'echarts'
+import echarts from '../echarts'
 import { api } from '../api'
+import { normalizeSequence } from '../sequence'
 import RnaArc from '../components/RnaArc.vue'
 
 const route = useRoute()
 const router = useRouter()
 
-const seq = computed(() => {
-  const s = (route.query.seq || '').toUpperCase().replace(/T/g, 'U')
-  return s.replace(/[^AUCG]/g, '')
-})
+const seq = computed(() => normalizeSequence(route.query.seq || ''))
 
 const fold = ref(null)
 const pp = ref(null)
@@ -20,6 +18,7 @@ const error = ref('')
 const engineVersion = ref('')
 const examples = ref([])
 const copied = ref(false)
+const heatLimit = ref(300)
 
 const heatEl = ref(null)
 let chart = null
@@ -34,7 +33,7 @@ async function run() {
   fold.value = null
   pp.value = null
   try {
-    if (seq.value.length <= 200) {
+    if (seq.value.length <= heatLimit.value) {
       const [f, p] = await Promise.all([api.fold(seq.value), api.pairprob(seq.value)])
       fold.value = f
       pp.value = p
@@ -122,6 +121,7 @@ onMounted(async () => {
   try {
     const [h, e] = await Promise.all([api.health(), api.examples()])
     engineVersion.value = h.viennarna_version || ''
+    heatLimit.value = h.pairprob_max_len || heatLimit.value
     examples.value = e.examples
   } catch {}
 })
@@ -177,6 +177,9 @@ watch(seq, () => run())
           <h2 style="margin-top: 18px;">二级结构图</h2>
           <RnaArc :structure="fold.structure" :sequence="seq" />
           <p class="hint mono" style="margin-top: 8px;">{{ fold.structure }}</p>
+          <p v-if="seq.length > heatLimit" class="hint">
+            序列 {{ seq.length }} nt 超过配对概率热力图限长 {{ heatLimit }} nt，此处只展示折叠结果。
+          </p>
         </template>
       </div>
 

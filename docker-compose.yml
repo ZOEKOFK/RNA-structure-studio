@@ -1,10 +1,25 @@
 services:
   backend:
-    build: .
+    build:
+      context: .
+      args:
+        # 设为 1 时安装 torch + multimolecule（镜像更大，构建更慢）
+        INSTALL_DEEP: "0"
     ports:
       - "8000:8000"
     volumes:
       - ./data:/app/data
-    # 阶段 0 会把 ViennaRNA 装进镜像；本地直接 uvicorn 跑则走降级引擎
+      # RNA-FM 权重目录（可选）；不存在时自动使用降级嵌入
+      - ./models:/app/models:ro
     environment:
       - PYTHONUNBUFFERED=1
+      - RNA_LOG_LEVEL=INFO
+      # 生产环境建议改为实际前端来源，默认 * 仅用于本地
+      - RNA_CORS_ORIGINS=*
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped

@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api'
+import { normalizeSequence } from '../sequence'
 import RnaArc from '../components/RnaArc.vue'
 
 const route = useRoute()
@@ -17,11 +18,10 @@ const bases = ['A', 'U', 'G', 'C']
 const maxLen = 300
 
 onMounted(() => {
-  const s = (route.query.seq || '').toUpperCase().replace(/T/g, 'U')
-  sequence.value = s.replace(/[^AUCG]/g, '')
+  sequence.value = normalizeSequence(route.query.seq || '')
 })
 
-const normalized = computed(() => sequence.value.toUpperCase().replace(/T/g, 'U').replace(/[^AUCG]/g, ''))
+const normalized = computed(() => normalizeSequence(sequence.value))
 const len = computed(() => normalized.value.length)
 
 const refBase = computed(() => {

@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api'
+import { normalizeSequence } from '../sequence'
 
 const route = useRoute()
 const sequence = ref('')
@@ -10,10 +11,10 @@ const result = ref(null)
 const loading = ref(false)
 const error = ref('')
 
-const normalized = computed(() => sequence.value.toUpperCase().replace(/T/g, 'U').replace(/[^AUCG]/g, ''))
+const normalized = computed(() => normalizeSequence(sequence.value))
 
 onMounted(async () => {
-  const s = (route.query.seq || '').toUpperCase().replace(/T/g, 'U').replace(/[^AUCG]/g, '')
+  const s = normalizeSequence(route.query.seq || '')
   try {
     const e = await api.examples()
     examples.value = e.examples

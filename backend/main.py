@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import List, Optional
 
@@ -15,16 +16,24 @@ from pydantic import BaseModel, Field
 
 from . import rna_fold, rna_fm
 
+logging.basicConfig(
+    level=os.environ.get("RNA_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger("rna.api")
+
 app = FastAPI(title="RNA Structure Prediction API", version="0.1.0")
 
+# 默认放开全部来源方便本地前端；生产可设 RNA_CORS_ORIGINS=http://a.com,http://b.com
+_origins = [o.strip() for o in os.environ.get("RNA_CORS_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-_RNACOMPOSER_MAX_LEN = 300
+_RNACOMPOSER_MAX_LEN = 300   # 3D 预测限长（RNAComposer 服务端限制）
 
 
 class FoldRequest(BaseModel):
@@ -79,6 +88,8 @@ def health():
         "engine": engine,
         "rnafold_available": vienna,
         "viennarna_version": rna_fold.engine_version(),
+        "max_sequence_len": rna_fold.MAX_SEQUENCE_LEN,
+        "pairprob_max_len": rna_fold.BPP_MAX_LEN if rna_fold._HAS_RNA else rna_fold.BOLTZMANN_MAX_LEN,
         **rna_fm.engine_detail(),
     }
 
@@ -222,3 +233,45 @@ def deep_job(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="任务不存在或已过期")
     return job
+
+
+@app.delete("/api/deep/jobs/{job_id}")
+def deep_cancel(job_id: str):
+    """取消排队中或运行中的深度任务。"""
+    job = rna_fm.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    if not rna_fm.cancel_job(job_id):
+        raise HTTPException(status_code=409, detail=f"任务已处于 {job['status']} 状态，无法取消")
+    logger.info("深度任务已取消 job_id=%s", job_id)
+    return {"job_id": job_id, "status": "cancelled"}
+
+
+# --------------------------------------------------------------------------- #
+# 静态前端（单容器部署）
+# 本地开发用 Vite（npm run dev），此处仅在存在 frontend/dist 时挂载，
+# 让 Docker 镜像 / 生产环境一个进程同时提供页面与 API。
+# 必须放在所有 /api 路由之后注册，否则会抢先匹配。
+# --------------------------------------------------------------------------- #
+_DIST_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist"
+)
+
+if os.path.isdir(_DIST_DIR):
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    _ASSETS_DIR = os.path.join(_DIST_DIR, "assets")
+    if os.path.isdir(_ASSETS_DIR):
+        app.mount("/assets", StaticFiles(directory=_ASSETS_DIR), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_frontend(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="接口不存在")
+        root = os.path.realpath(_DIST_DIR)
+        candidate = os.path.realpath(os.path.join(root, full_path))
+        # 防止 ../ 越界读取 dist 之外的任意文件
+        if full_path and candidate.startswith(root + os.sep) and os.path.isfile(candidate):
+            return FileResponse(candidate)
+        return FileResponse(os.path.join(root, "index.html"))
