@@ -11,11 +11,16 @@
   },
   "dependencies": {
     "echarts": "^5.5.0",
+    "fornac": "^1.1.8",
+    "molstar": "^5.13.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "vue": "^3.4.0",
     "vue-router": "^4.3.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",
+    "sass": "^1.80.6",
     "vite": "^5.2.0"
   }
 }

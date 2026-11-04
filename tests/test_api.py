@@ -35,6 +35,27 @@ def test_examples():
     assert all("sequence" in ex and "name" in ex for ex in examples)
 
 
+def test_examples_include_rfam_annotation():
+    examples = client.get("/api/examples").json()["examples"]
+    annotated = [ex for ex in examples if ex.get("rfam")]
+    assert annotated, "示例库应至少有一条带 Rfam 家族注释"
+    assert all(ex["rfam"]["accession"].startswith("RF") for ex in annotated)
+    assert all(ex["rfam"]["consensus"] for ex in annotated)
+
+
+def test_pdb_endpoint_serves_local_coordinates():
+    res = client.get("/api/pdb/4TNA")
+    if res.status_code == 404:
+        pytest.skip("data/pdb 未收录 4TNA")
+    assert res.status_code == 200
+    assert "ATOM" in res.text
+
+
+def test_pdb_endpoint_rejects_malformed_id():
+    assert client.get("/api/pdb/TOOLONG").status_code == 400
+    assert client.get("/api/pdb/4T").status_code == 400
+
+
 def test_fold_ok():
     res = client.post("/api/fold", json={"sequence": EXAMPLE_SEQ})
     assert res.status_code == 200

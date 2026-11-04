@@ -13,9 +13,9 @@ export default defineConfig({
     },
   },
   build: {
-    // ECharts 按需引入后仍有约 576 kB 的 vendor chunk，且仅在折叠/深度页懒加载，
-    // 不影响首屏，故放宽警告阈值
-    chunkSizeWarningLimit: 700,
+    // ECharts 按需引入后仍有约 576 kB，Mol* 查看器 chunk 约 5.3 MB，
+    // 两者都只在对应页面懒加载，不影响首屏，故放宽警告阈值
+    chunkSizeWarningLimit: 6000,
     rollupOptions: {
       output: {
         // 把较大的第三方依赖拆成独立 chunk，首屏更小且便于长期缓存

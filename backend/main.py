@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -15,6 +16,7 @@ from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from . import composer_api, rcsb, rna_fold, rna_fm
@@ -160,6 +162,17 @@ def _examples_path() -> str:
     )
 
 
+_PDB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "pdb")
+
+
+def _local_pdb(pdb_id: Optional[str]) -> Optional[str]:
+    """返回本地已收录的 PDB 文件路径（离线 3D 查看用），未收录返回 None。"""
+    if not pdb_id or not re.fullmatch(r"[0-9A-Za-z]{4}", pdb_id):
+        return None
+    path = os.path.join(_PDB_DIR, f"{pdb_id.upper()}.pdb")
+    return path if os.path.isfile(path) else None
+
+
 _EXAMPLES_LOCK = threading.Lock()
 _EXAMPLES_CACHE: Dict[str, object] = {"mtime": None, "data": []}
 
@@ -196,6 +209,20 @@ def health():
 def examples():
     data = _load_examples()
     return {"examples": data}
+
+
+@app.get("/api/pdb/{pdb_id}")
+def pdb_file(pdb_id: str):
+    """返回本地预置的 PDB 坐标，供离线 3D 查看（Mol* 无需外网）。
+
+    未收录的 PDB 返回 404，前端会回退到 RCSB 的公开下载地址。
+    """
+    if not re.fullmatch(r"[0-9A-Za-z]{4}", pdb_id):
+        raise HTTPException(status_code=400, detail="PDB ID 必须是 4 位字母数字")
+    path = _local_pdb(pdb_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail=f"本地未收录 {pdb_id.upper()} 的坐标文件")
+    return FileResponse(path, media_type="chemical/x-pdb", filename=f"{pdb_id.upper()}.pdb")
 
 
 @app.post("/api/fold")
@@ -286,6 +313,8 @@ def tertiary(req: TertiaryRequest, request: Request):
                 "source": "prebuilt",
                 "name": ex.get("name"),
                 "pdb": ex.get("pdb"),
+                "pdb_local": bool(_local_pdb(ex.get("pdb"))),
+                "rfam": ex.get("rfam"),
                 "annotation": ex.get("annotation"),
                 "sequence": seq,
                 "structure": structure,
@@ -307,6 +336,7 @@ def tertiary(req: TertiaryRequest, request: Request):
 
     if similar:
         source = "rcsb"
+        similar = [{**hit, "local": bool(_local_pdb(hit.get("pdb_id")))} for hit in similar]
         message = (
             f"未命中预置结构库；RCSB PDB 找到 {len(similar)} 条相似实验结构"
             f"（序列相似度 ≥90%）。"

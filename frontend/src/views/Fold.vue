@@ -5,6 +5,7 @@ import echarts from '../echarts'
 import { api } from '../api'
 import { normalizeSequence } from '../sequence'
 import RnaArc from '../components/RnaArc.vue'
+import FornaCircle from '../components/FornaCircle.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -19,6 +20,10 @@ const engineVersion = ref('')
 const examples = ref([])
 const copied = ref(false)
 const heatLimit = ref(300)
+const viewMode = ref('circle')
+const fornaFailed = ref(false)
+
+const currentExample = computed(() => examples.value.find((ex) => ex.sequence === seq.value) || null)
 
 const heatEl = ref(null)
 let chart = null
@@ -107,6 +112,12 @@ function downloadResult() {
   URL.revokeObjectURL(a.href)
 }
 
+function onFornaFailed(e) {
+  fornaFailed.value = true
+  viewMode.value = 'arc'
+  console.warn('forna 初始化失败，已回退到弧线图', e)
+}
+
 function loadExample(ex) {
   router.push({ path: '/fold', query: { seq: ex.sequence } })
 }
@@ -175,12 +186,52 @@ watch(seq, () => run())
           <p v-if="fold.mfe_note" class="hint">{{ fold.mfe_note }}</p>
 
           <h2 style="margin-top: 18px;">二级结构图</h2>
-          <RnaArc :structure="fold.structure" :sequence="seq" />
+          <div class="tabs">
+            <button
+              class="tab"
+              :class="{ active: viewMode === 'circle' && !fornaFailed }"
+              :disabled="fornaFailed"
+              @click="viewMode = 'circle'"
+            >
+              forna 交互圈图
+            </button>
+            <button class="tab" :class="{ active: viewMode === 'arc' }" @click="viewMode = 'arc'">弧线图</button>
+          </div>
+          <FornaCircle
+            v-if="viewMode === 'circle' && !fornaFailed"
+            :structure="fold.structure"
+            :sequence="seq"
+            :height="480"
+            @failed="onFornaFailed"
+          />
+          <RnaArc v-else :structure="fold.structure" :sequence="seq" />
+          <p class="hint" v-if="fornaFailed">交互圈图组件加载失败，已自动切换到自绘弧线图。</p>
           <p class="hint mono" style="margin-top: 8px;">{{ fold.structure }}</p>
           <p v-if="seq.length > heatLimit" class="hint">
             序列 {{ seq.length }} nt 超过配对概率热力图限长 {{ heatLimit }} nt，此处只展示折叠结果。
           </p>
         </template>
+      </div>
+
+      <div v-if="currentExample && currentExample.rfam" class="card">
+        <h2>Rfam 家族注释</h2>
+        <div class="row" style="margin-bottom: 8px;">
+          <div class="col">
+            <span class="tag">家族</span><br />
+            <a :href="`https://rfam.org/family/${currentExample.rfam.accession}`" target="_blank" rel="noreferrer">
+              {{ currentExample.rfam.accession }} · {{ currentExample.rfam.name }}
+            </a>
+          </div>
+          <div class="col">
+            <span class="tag">注释</span><br />{{ currentExample.annotation }}
+          </div>
+        </div>
+        <span class="tag">Rfam 共识二级结构（SEED 对齐）</span>
+        <p class="mono hint" style="word-break: break-all; margin-top: 6px;">{{ currentExample.rfam.consensus }}</p>
+        <p class="hint">
+          共识结构按 Rfam SEED 对齐列给出（{{ currentExample.rfam.consensus.length }} 列），长度与上面预测的序列不同；
+          符号 <code>&lt; &gt;</code> 表示螺旋、<code>[ ]</code> 表示假结、<code>_ -</code> 表示插入列。上方预测为 ViennaRNA 结果，可对照差异。
+        </p>
       </div>
 
       <div v-if="pp" class="card">
@@ -202,3 +253,26 @@ watch(seq, () => run())
     </template>
   </div>
 </template>
+
+<style scoped>
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+.tab {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-weight: 500;
+}
+.tab.active {
+  background: var(--accent);
+  color: #08131b;
+}
+.tab:disabled {
+  opacity: 0.45;
+}
+</style>

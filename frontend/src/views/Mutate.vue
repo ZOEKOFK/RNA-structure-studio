@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api'
 import { normalizeSequence } from '../sequence'
@@ -16,9 +16,24 @@ const error = ref('')
 
 const bases = ['A', 'U', 'G', 'C']
 const maxLen = 300
+const deepMaxLen = ref(300)
 
-onMounted(() => {
+// 突变结果出来后台自动跑一次 RNA-FM 嵌入偏移，不阻塞页面
+const deep = ref(null)
+let deepToken = 0
+let deepJob = ''
+
+onMounted(async () => {
   sequence.value = normalizeSequence(route.query.seq || '')
+  try {
+    const h = await api.health()
+    if (h.deep_max_len) deepMaxLen.value = h.deep_max_len
+  } catch {}
+})
+
+onBeforeUnmount(() => {
+  deepToken++
+  if (deepJob) api.deepCancel(deepJob).catch(() => {})
 })
 
 const normalized = computed(() => normalizeSequence(sequence.value))
@@ -52,14 +67,107 @@ async function run() {
   loading.value = true
   error.value = ''
   result.value = null
+  stopDeep()
   try {
     result.value = await api.mutate(s, Number(position.value), base.value)
+    if (s.length <= deepMaxLen.value) runDeep(s, Number(position.value), base.value)
   } catch (e) {
     error.value = e.message
   } finally {
     loading.value = false
   }
 }
+
+function stopDeep() {
+  deepToken++
+  if (deepJob) {
+    api.deepCancel(deepJob).catch(() => {})
+    deepJob = ''
+  }
+  deep.value = null
+}
+
+function cancelDeep() {
+  stopDeep()
+}
+
+async function runDeep(s, pos, b) {
+  const token = deepToken
+  deep.value = { status: 'queued', stage: '', progress: 0, result: null, error: '' }
+  try {
+    const { job_id } = await api.deepMutate(s, pos, b)
+    if (token !== deepToken) {
+      api.deepCancel(job_id).catch(() => {})
+      return
+    }
+    deepJob = job_id
+    await pollDeep(job_id, token)
+  } catch (e) {
+    if (token === deepToken && deep.value) {
+      deep.value.status = 'error'
+      deep.value.error = e.message
+    }
+  }
+}
+
+async function pollDeep(id, token) {
+  const started = Date.now()
+  let limit = 120000
+  while (token === deepToken) {
+    let job
+    try {
+      job = await api.deepJob(id)
+    } catch (e) {
+      if (token === deepToken && deep.value) {
+        deep.value.status = 'error'
+        deep.value.error = e.message
+      }
+      return
+    }
+    if (token !== deepToken) return
+    deep.value.status = job.status
+    deep.value.stage = job.stage || ''
+    deep.value.progress = job.progress || 0
+    // 首次加载/下载权重时放宽超时上限（与深度页一致）
+    if (job.stage) limit = Math.max(limit, 600000)
+    if (job.status === 'done') {
+      deep.value.result = job.result
+      deepJob = ''
+      return
+    }
+    if (job.status === 'error' || job.status === 'cancelled') {
+      deep.value.error = job.error || (job.status === 'cancelled' ? '已取消' : '任务失败')
+      deepJob = ''
+      return
+    }
+    if (Date.now() - started > limit) {
+      deep.value.status = 'error'
+      deep.value.error = '深度分析超时'
+      api.deepCancel(id).catch(() => {})
+      deepJob = ''
+      return
+    }
+    await new Promise((r) => setTimeout(r, 500))
+  }
+}
+
+const deepShiftAtPosition = computed(() => {
+  if (!deep.value || !deep.value.result) return null
+  const arr = deep.value.result.shift || []
+  return arr[Number(position.value) - 1] ?? null
+})
+
+const deepBars = computed(() => {
+  if (!deep.value || !deep.value.result) return []
+  const r = deep.value.result
+  const arr = r.shift || []
+  const max = Math.max(...arr, 0.001)
+  return (r.top_positions || []).slice(0, 5).map((p) => ({
+    position: p,
+    value: arr[p - 1],
+    width: Math.round(((arr[p - 1] || 0) / max) * 100),
+  }))
+})
 </script>
 
 <template>
@@ -145,6 +253,55 @@ async function run() {
           <span v-if="!result.formed_pairs.length" class="muted">无</span>
         </div>
       </div>
+      <div v-if="deep" class="card">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <h2 style="margin: 0;">深度嵌入偏移（RNA-FM）</h2>
+          <button v-if="!deep.result && deep.status !== 'error'" class="secondary" @click="cancelDeep">取消</button>
+        </div>
+
+        <template v-if="!deep.result">
+          <div class="progress"><div class="bar" :style="{ width: Math.round((deep.progress || 0) * 100) + '%' }"></div></div>
+          <p class="hint">
+            {{ deep.stage || ({ queued: '排队中…', running: '计算中…', cancelled: '已取消', error: '任务失败' }[deep.status] || '准备中…') }}
+          </p>
+          <p v-if="deep.error" class="error">{{ deep.error }}</p>
+        </template>
+
+        <template v-else>
+          <div class="row" style="align-items: flex-end;">
+            <div class="col">
+              <span class="tag">平均位移</span><br />
+              <strong>{{ deep.result.mean_shift }}</strong>
+            </div>
+            <div class="col">
+              <span class="tag">突变位点位移</span><br />
+              <strong>{{ deepShiftAtPosition ?? '—' }}</strong>
+            </div>
+            <div class="col">
+              <span class="tag">最大位移位点</span><br />
+              {{ deep.result.max_shift_position }}（{{ deep.result.max_shift }}）
+            </div>
+            <div class="col">
+              <span class="tag">嵌入</span><br />
+              {{ deep.result.engine === 'rna-fm' ? '真实 RNA-FM' : '降级嵌入' }} · {{ deep.result.dim }} 维
+            </div>
+          </div>
+
+          <div style="margin-top: 12px;">
+            <span class="tag">位移最大的 5 个位点</span>
+            <div v-for="b in deepBars" :key="b.position" class="bar-row">
+              <span class="mono" style="width: 46px;">{{ b.position }}</span>
+              <div class="bar-track"><div class="bar-fill" :style="{ width: b.width + '%' }"></div></div>
+              <span class="mono" style="width: 54px; text-align: right;">{{ b.value }}</span>
+            </div>
+          </div>
+
+          <p class="hint">
+            位移为每个位点嵌入向量的 L2 距离；数值越大说明该位点在突变后表征变化越明显。
+            <template v-if="deep.result.fallback_reason">（{{ deep.result.fallback_reason }}）</template>
+          </p>
+        </template>
+      </div>
     </template>
   </div>
 </template>
@@ -153,4 +310,34 @@ async function run() {
 .trend { margin-left: 8px; font-weight: 600; font-size: 0.9rem; }
 .trend.good { color: var(--accent); }
 .trend.bad { color: var(--red); }
+.progress {
+  height: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 10px;
+}
+.bar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+.bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.bar-track {
+  flex: 1;
+  height: 10px;
+  background: var(--panel-2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.bar-fill {
+  height: 100%;
+  background: var(--accent-2, #ffe66d);
+}
 </style>

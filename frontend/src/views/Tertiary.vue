@@ -1,8 +1,9 @@
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api'
 import { normalizeSequence } from '../sequence'
+import MolstarViewer from '../components/MolstarViewer.vue'
 
 const route = useRoute()
 const sequence = ref('')
@@ -13,9 +14,6 @@ const error = ref('')
 const selectedPdb = ref('')
 const copied = ref(false)
 const controller = ref(null)
-const iframeReady = ref(false)
-const iframeSlow = ref(false)
-let iframeTimer = null
 
 const normalized = computed(() => normalizeSequence(sequence.value))
 
@@ -45,31 +43,23 @@ const viewerPdb = computed(
   () => selectedPdb.value || (result.value && result.value.pdb) || ''
 )
 
-const viewerUrl = computed(() =>
-  viewerPdb.value ? `https://molstar.org/viewer/?pdb=${viewerPdb.value}` : ''
-)
+// 本地已收录坐标优先（离线可用），否则回退到 RCSB 公开下载地址
+const viewerLocal = computed(() => {
+  if (!viewerPdb.value) return false
+  const hit = ((result.value && result.value.similar) || []).find((x) => x.pdb_id === viewerPdb.value)
+  return Boolean((result.value && result.value.pdb_local) || (hit && hit.local))
+})
 
-// Mol* 为外部页面，网络受限时 iframe 可能长时间空白：10 秒未加载完给出提示
-watch(viewerUrl, (url) => {
-  iframeReady.value = false
-  iframeSlow.value = false
-  clearTimeout(iframeTimer)
-  if (url) {
-    iframeTimer = setTimeout(() => {
-      if (!iframeReady.value) iframeSlow.value = true
-    }, 10000)
-  }
+const viewerUrl = computed(() => {
+  if (!viewerPdb.value) return ''
+  return viewerLocal.value
+    ? `/api/pdb/${viewerPdb.value}`
+    : `https://files.rcsb.org/download/${viewerPdb.value}.pdb`
 })
 
 onUnmounted(() => {
-  clearTimeout(iframeTimer)
   if (controller.value) controller.value.abort()
 })
-
-function onIframeLoad() {
-  iframeReady.value = true
-  iframeSlow.value = false
-}
 
 function pickSimilar(item) {
   selectedPdb.value = item.pdb_id
@@ -160,7 +150,28 @@ function cancel() {
           <div class="hint">PDB {{ ex.pdb }} · {{ ex.sequence.length }} nt</div>
         </div>
       </div>
-      <p class="hint">仅含已解析 PDB 的条目可在线 3D 查看。</p>
+      <p class="hint">仅含已解析 PDB 的条目可在线 3D 查看；示例坐标为本地收录，断网也能渲染。</p>
+    </div>
+
+    <div class="card">
+      <h2>进阶能力：RoseTTAFold NA</h2>
+      <p class="muted">
+        对既无实验结构、RCSB 也检索不到相似结构的序列，可用 RoseTTAFold All-Atom / RoseTTAFold NA
+        直接预测 RNA 三维坐标。它需要下载数百 MB 至 GB 级权重并占用较高算力，因此本项目只提供
+        「进阶提示」而不内置调用：预测完成后把 PDB 文件放到本地，即可用上方 Mol* 查看。
+      </p>
+      <p class="hint">
+        适用场景：novel 序列、设计变体、没有实验结构可参考的孤儿 RNA。相比 RNAComposer 的手动桥接，
+        它属于本地部署型方案，无外网依赖。
+      </p>
+      <a
+        href="https://github.com/baker-laboratory/RoseTTAFold-All-Atom"
+        target="_blank"
+        rel="noopener noreferrer"
+        style="text-decoration: none;"
+      >
+        <button class="secondary">查看开源项目</button>
+      </a>
     </div>
 
     <template v-if="result">
@@ -179,21 +190,12 @@ function cancel() {
           <p v-if="result.rcsb_error" class="hint">RCSB 错误：{{ result.rcsb_error }}</p>
         </template>
 
-        <iframe
-          v-if="viewerUrl"
-          :src="viewerUrl"
-          style="width: 100%; height: 560px; border: 1px solid var(--border); border-radius: 8px; margin-top: 10px;"
-          allowfullscreen
-          @load="onIframeLoad"
-        ></iframe>
+        <MolstarViewer v-if="viewerUrl" :url="viewerUrl" :height="560" />
         <p v-if="viewerUrl" class="hint">
-          3D 视图由 Mol* Viewer 提供（当前 PDB {{ viewerPdb }}），数据来自 RCSB PDB。
-          <a :href="viewerUrl" target="_blank" rel="noopener noreferrer">在新窗口打开</a>
-        </p>
-        <p v-if="iframeSlow" class="hint">
-          视图 10 秒内未加载完成，通常是内网或离线无法访问 molstar.org；
-          可点击上方「在新窗口打开」重试，或直接访问
-          <a :href="`https://www.rcsb.org/structure/${viewerPdb}`" target="_blank" rel="noopener noreferrer">RCSB 页面</a>。
+          3D 视图由内嵌 Mol* Viewer 渲染（当前 PDB {{ viewerPdb }}）。
+          <template v-if="viewerLocal">坐标来自本地预览库 `/api/pdb/{{ viewerPdb }}`，内网与离线可用。</template>
+          <template v-else>该结构未收录到本地，坐标从 RCSB 实时下载。</template>
+          <a :href="`https://www.rcsb.org/structure/${viewerPdb}`" target="_blank" rel="noopener noreferrer">RCSB 页面</a>
         </p>
       </div>
 
