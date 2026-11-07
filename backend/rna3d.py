@@ -28,8 +28,6 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 
-from . import rna_fold
-
 
 def _env_int(name: str, default: int) -> int:
     try:
@@ -51,7 +49,54 @@ _CACHE_DIR = os.environ.get("RNA_3D_CACHE_DIR") or os.path.join(_CACHE_ROOT, "mo
 _BACKBONE = 5.9      # 相邻核苷酸（P 原子）间距（Å）
 _PAIR_DIST = 10.4    # 典型 RNA 碱基对（配对 P 原子）距离（Å）
 _RELAX_ITERS = 240
-_BUILTIN_VERSION = 3  # 内置建模算法版本；改动几何后自增，旧缓存自动失效
+_BUILTIN_VERSION = 4  # 内置建模算法版本；改动几何后自增，旧缓存自动失效
+
+# 四类括号各自独立配对栈，可表达伪结（如 ..[[...]]... 处 ( 与 [ 交叉）
+_BRACKET_OPEN = {"(": ")", "[": "]", "{": "}", "<": ">"}
+
+
+def parse_pairs(structure: str) -> Tuple[List[Tuple[int, int]], bool]:
+    """解析 dot-bracket 为配对列表（0-based，i < j），支持 () [] {} <> 四类括号。
+
+    返回 (pairs, has_pseudoknot)。伪结判定：存在交叉对，即
+    存在 (i, j) 与 (k, l) 满足 i < k < j < l。
+    不匹配的括号（无对应开括号）忽略，与主折叠模块行为一致。
+    """
+    stacks: Dict[str, List[int]] = {ch: [] for ch in _BRACKET_OPEN}
+    pairs: List[Tuple[int, int]] = []
+    for i, ch in enumerate(structure):
+        if ch in stacks:
+            stacks[ch].append(i)
+        else:
+            for open_ch, close_ch in _BRACKET_OPEN.items():
+                if ch == close_ch and stacks[open_ch]:
+                    pairs.append((stacks[open_ch].pop(), i))
+                    break
+    pairs.sort()
+    has_pk = False
+    for a in range(len(pairs)):
+        i1, j1 = pairs[a]
+        for b in range(a + 1, len(pairs)):
+            i2, j2 = pairs[b]
+            if i2 >= j1:
+                break
+            if i1 < i2 < j1 < j2:
+                has_pk = True
+                break
+        if has_pk:
+            break
+    return pairs, has_pk
+
+
+def pseudoknot_note(structure: str) -> Optional[str]:
+    """结构含伪结时给出提示文案；无伪结返回 None。"""
+    _, has_pk = parse_pairs(structure)
+    if not has_pk:
+        return None
+    return (
+        "检测到伪结：交叉配对已按普通距离约束一并建模，"
+        "但内置简化模型无法表达真实伪结拓扑，走向仅供参考"
+    )
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=1)
 _JOB_LOCK = threading.Lock()
@@ -228,7 +273,7 @@ def _pdb(seq: str, structure: str, pts: List[List[float]]) -> str:
     """输出完整糖-磷酸骨架（P/O5'/C5'/C4'/C3'/O3'），Mol* 能识别为核酸链。"""
     n = len(seq)
     pair_map: Dict[int, int] = {}
-    for i, j in rna_fold.dot_bracket_to_pairs(structure):
+    for i, j in parse_pairs(structure)[0]:
         pair_map[i], pair_map[j] = j, i
     lines: List[str] = [
         "REMARK   SIMPLIFIED RNA MODEL (constraint-based, teaching grade)",
@@ -265,7 +310,7 @@ def _pdb(seq: str, structure: str, pts: List[List[float]]) -> str:
 
 def build_builtin(seq: str, structure: str) -> str:
     """内置建模器：返回 PDB 文本。"""
-    pairs = rna_fold.dot_bracket_to_pairs(structure)
+    pairs = parse_pairs(structure)[0]
     pts = _initial_layout(len(seq), structure)
     pts = _relax(pts, pairs)
     return _pdb(seq, structure, pts)

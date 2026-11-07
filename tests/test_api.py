@@ -440,6 +440,56 @@ def test_3d_predict_builds_and_serves_model(monkeypatch, tmp_path):
     assert "SIMPLIFIED RNA MODEL" in model.text
 
 
+def test_3d_predict_pseudoknot_note_and_pairs(monkeypatch, tmp_path):
+    """伪结结构：提交时返回 note，且交叉配对被纳入建模（不再静默丢弃）。"""
+    from backend import rna3d
+
+    monkeypatch.setattr(rna3d, "_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(rna3d, "_CMD_TEMPLATE", "")
+    seq = "GGGAAACC"          # 8 nt
+    struct = "([..)].."      # (0,4) 与 (1,5) 交叉 → 伪结
+
+    res = client.post("/api/3d/predict", json={"sequence": seq, "structure": struct})
+    assert res.status_code == 200
+    assert res.json()["note"]
+    assert "伪结" in res.json()["note"]
+
+    job = _wait_job(f"/api/3d/jobs/{res.json()['job_id']}")
+    assert job["status"] == "done", job.get("error")
+    model = client.get(job["result"]["url"])
+    remark = next(l for l in model.text.splitlines() if l.startswith("REMARK   LENGTH"))
+    # 两对交叉配对都被计入（旧实现会静默丢弃 [] 对，PAIRS 为 0）
+    assert remark.endswith("PAIRS 2")
+
+
+def test_3d_predict_no_note_for_plain_structure(monkeypatch, tmp_path):
+    from backend import rna3d
+
+    monkeypatch.setattr(rna3d, "_CACHE_DIR", str(tmp_path))
+    res = client.post("/api/3d/predict", json={"sequence": EXAMPLE_SEQ})
+    assert res.status_code == 200
+    assert res.json()["note"] is None
+
+
+def test_parse_pairs_detects_pseudoknot():
+    from backend import rna3d
+
+    # 交叉对 (0,4) 与 (1,5) → 伪结
+    pairs, has_pk = rna3d.parse_pairs("([..)]..")
+    assert sorted(pairs) == [(0, 4), (1, 5)]
+    assert has_pk is True
+
+    # 嵌套 [] 不是伪结
+    pairs2, has_pk2 = rna3d.parse_pairs("..[[......]]......")
+    assert sorted(pairs2) == [(2, 11), (3, 10)]
+    assert has_pk2 is False
+
+    # 普通括号
+    pairs3, has_pk3 = rna3d.parse_pairs("(((...)))")
+    assert len(pairs3) == 3
+    assert has_pk3 is False
+
+
 def test_3d_predict_uses_predicted_structure_by_default(monkeypatch, tmp_path):
     from backend import rna3d
 

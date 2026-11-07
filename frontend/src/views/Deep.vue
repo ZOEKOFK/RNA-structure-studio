@@ -150,12 +150,31 @@ async function computeMutate() {
 }
 
 // ---------------- charts ----------------
+const AXIS = {
+  line: '#e2e8f0',
+  label: '#6b7a90',
+  name: '#93a1b5',
+  split: '#f1f5f9',
+}
+
 function axisStyle() {
   return {
-    axisLine: { lineStyle: { color: '#2c3a55' } },
-    axisLabel: { color: '#8b9bb4' },
-    splitLine: { lineStyle: { color: '#1c2940' } },
-    nameTextStyle: { color: '#8b9bb4' },
+    axisLine: { lineStyle: { color: AXIS.line } },
+    axisTick: { show: false },
+    axisLabel: { color: AXIS.label, fontSize: 10 },
+    splitLine: { lineStyle: { color: AXIS.split } },
+    nameTextStyle: { color: AXIS.name, fontSize: 11 },
+  }
+}
+
+function tooltipStyle() {
+  return {
+    backgroundColor: '#ffffff',
+    borderColor: '#e4e9f2',
+    borderWidth: 1,
+    padding: [8, 12],
+    textStyle: { color: '#0d1b2f', fontSize: 12 },
+    extraCssText: 'box-shadow: 0 12px 30px -12px rgba(13,27,47,.35); border-radius: 10px;',
   }
 }
 
@@ -183,18 +202,19 @@ function drawPca() {
   }))
   c.setOption({
     backgroundColor: 'transparent',
-    tooltip: { formatter: (p) => `${p.data.name}<br/>PC1 ${p.value[0]} / PC2 ${p.value[1]}` },
-    grid: { left: 56, right: 24, top: 28, bottom: 40 },
-    xAxis: { type: 'value', name: 'PC1', ...axisStyle() },
-    yAxis: { type: 'value', name: 'PC2', ...axisStyle() },
+    textStyle: { fontFamily: 'inherit' },
+    tooltip: { ...tooltipStyle(), formatter: (p) => `${p.data.name}<br/>PC1 ${p.value[0]} / PC2 ${p.value[1]}` },
+    grid: { left: 56, right: 42, top: 34, bottom: 46 },
+    xAxis: { type: 'value', name: 'PC1', nameLocation: 'middle', nameGap: 28, ...axisStyle() },
+    yAxis: { type: 'value', name: 'PC2', nameLocation: 'middle', nameGap: 42, nameRotate: 90, ...axisStyle() },
     series: [
       {
         type: 'line',
         data,
         showSymbol: true,
         symbolSize: 5,
-        lineStyle: { color: '#4ecdc4', width: 1, opacity: 0.55 },
-        itemStyle: { color: '#4ecdc4' },
+        lineStyle: { color: '#6366f1', width: 1.2, opacity: 0.5 },
+        itemStyle: { color: '#4f46e5', borderColor: '#fff', borderWidth: 1 },
       },
     ],
   }, true)
@@ -206,18 +226,27 @@ function drawNorm() {
   const xs = embed.value.norm.map((_, i) => String(i + 1))
   c.setOption({
     backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis' },
-    grid: { left: 56, right: 24, top: 24, bottom: 44 },
-    xAxis: { type: 'category', data: xs, name: '位点', ...axisStyle(), axisLabel: { color: '#8b9bb4', interval: Math.ceil(xs.length / 20) } },
-    yAxis: { type: 'value', name: 'L2 范数', ...axisStyle() },
+    textStyle: { fontFamily: 'inherit' },
+    tooltip: { ...tooltipStyle(), trigger: 'axis' },
+    grid: { left: 56, right: 42, top: 32, bottom: 50 },
+    xAxis: { type: 'category', data: xs, name: '位点', nameLocation: 'middle', nameGap: 28, ...axisStyle(), axisLabel: { color: AXIS.label, fontSize: 10, interval: Math.ceil(xs.length / 20) } },
+    yAxis: { type: 'value', name: 'L2 范数', nameLocation: 'middle', nameGap: 44, nameRotate: 90, ...axisStyle() },
     series: [
       {
         type: 'line',
         data: embed.value.norm,
         showSymbol: false,
         smooth: true,
-        lineStyle: { color: '#ffe66d', width: 1.6 },
-        areaStyle: { color: 'rgba(255, 230, 109, 0.12)' },
+        lineStyle: { color: '#d97706', width: 2 },
+        areaStyle: {
+          color: {
+            type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: 'rgba(217,119,6,0.26)' },
+              { offset: 1, color: 'rgba(217,119,6,0.02)' },
+            ],
+          },
+        },
       },
     ],
   }, true)
@@ -230,28 +259,31 @@ function drawShift() {
   const max = Math.max(...mut.value.shift, 0.001)
   c.setOption({
     backgroundColor: 'transparent',
+    textStyle: { fontFamily: 'inherit' },
     tooltip: {
+      ...tooltipStyle(),
       trigger: 'axis',
-      formatter: (ps) => `位点 ${ps[0].axisValue}<br/>嵌入偏移 ${ps[0].data}`,
+      formatter: (ps) => `位点 ${ps[0].axisValue}<br/>嵌入偏移 <b>${ps[0].data}</b>`,
     },
-    grid: { left: 56, right: 24, top: 24, bottom: 44 },
-    xAxis: { type: 'category', data: xs, name: '位点', ...axisStyle(), axisLabel: { color: '#8b9bb4', interval: Math.ceil(xs.length / 20) } },
-    yAxis: { type: 'value', name: 'L2 偏移', ...axisStyle() },
+    grid: { left: 56, right: 42, top: 32, bottom: 50 },
+    xAxis: { type: 'category', data: xs, name: '位点', nameLocation: 'middle', nameGap: 28, ...axisStyle(), axisLabel: { color: AXIS.label, fontSize: 10, interval: Math.ceil(xs.length / 20) } },
+    yAxis: { type: 'value', name: 'L2 偏移', nameLocation: 'middle', nameGap: 44, nameRotate: 90, ...axisStyle() },
     visualMap: {
       show: false,
       min: 0,
       max,
-      inRange: { color: ['#2b6e6b', '#4ecdc4', '#ffe66d', '#ff6b6b'] },
+      inRange: { color: ['#a5b4fc', '#6366f1', '#f59e0b', '#e11d48'] },
     },
     series: [
       {
         type: 'bar',
         data: mut.value.shift,
+        itemStyle: { borderRadius: [2, 2, 0, 0] },
         markLine: {
           symbol: 'none',
           silent: true,
-          label: { formatter: '突变位', color: '#ff6b6b' },
-          lineStyle: { color: '#ff6b6b', type: 'dashed' },
+          label: { formatter: '突变位', color: '#e11d48', fontSize: 10 },
+          lineStyle: { color: '#e11d48', type: 'dashed', width: 1.2 },
           data: [{ xAxis: mut.value.position - 1 }],
         },
       },
@@ -267,11 +299,12 @@ function drawMutPca() {
     pts.map((p, i) => ({ value: p, name: `${i + 1} · ${seq[i]}` }))
   c.setOption({
     backgroundColor: 'transparent',
-    legend: { textStyle: { color: '#8b9bb4' }, top: 0 },
-    tooltip: { formatter: (p) => `${p.seriesName} ${p.data.name}` },
-    grid: { left: 56, right: 24, top: 44, bottom: 40 },
-    xAxis: { type: 'value', name: 'PC1', ...axisStyle() },
-    yAxis: { type: 'value', name: 'PC2', ...axisStyle() },
+    textStyle: { fontFamily: 'inherit' },
+    legend: { textStyle: { color: AXIS.label, fontSize: 11 }, top: 0, icon: 'roundRect', itemWidth: 10, itemHeight: 10 },
+    tooltip: { ...tooltipStyle(), formatter: (p) => `${p.seriesName} ${p.data.name}` },
+    grid: { left: 56, right: 42, top: 50, bottom: 46 },
+    xAxis: { type: 'value', name: 'PC1', nameLocation: 'middle', nameGap: 28, ...axisStyle() },
+    yAxis: { type: 'value', name: 'PC2', nameLocation: 'middle', nameGap: 42, nameRotate: 90, ...axisStyle() },
     series: [
       {
         name: '野生型 WT',
@@ -279,8 +312,8 @@ function drawMutPca() {
         data: mk(mut.value.pca2_wt),
         showSymbol: true,
         symbolSize: 4,
-        lineStyle: { color: '#4ecdc4', width: 1, opacity: 0.5 },
-        itemStyle: { color: '#4ecdc4' },
+        lineStyle: { color: '#0d9488', width: 1.1, opacity: 0.45 },
+        itemStyle: { color: '#0d9488' },
       },
       {
         name: '突变型 MT',
@@ -288,8 +321,8 @@ function drawMutPca() {
         data: mk(mut.value.pca2_mt),
         showSymbol: true,
         symbolSize: 4,
-        lineStyle: { color: '#ff6b6b', width: 1, opacity: 0.5 },
-        itemStyle: { color: '#ff6b6b' },
+        lineStyle: { color: '#e11d48', width: 1.1, opacity: 0.45 },
+        itemStyle: { color: '#e11d48' },
       },
     ],
   }, true)
@@ -330,132 +363,277 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="container">
-    <div class="card">
-      <h1>RNA-FM 深度分析</h1>
-      <p class="muted" style="margin-top: 0;">
-        引擎：<strong>{{ engineLabel }}</strong>。逐位置嵌入 + 突变嵌入偏移，限长 {{ limit }} nt。
+  <div class="page">
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <span class="eyebrow">Deep · Step 04</span>
+          <h1>RNA-FM 深度表征</h1>
+        </div>
+        <span class="tag" :class="engineState.engine === 'rna-fm' ? 'tag--teal' : 'tag--amber'">
+          {{ engineLabel }}
+        </span>
+      </div>
+      <p class="lead">
+        逐位置提取 640 维上下文嵌入，观察序列沿 5'→3' 的表征轨迹；
+        再做单点突变，量化每个位点的嵌入偏移，定位受影响最大的区域。限长 {{ limit }} nt。
       </p>
 
-      <div class="row" style="align-items: flex-end;">
-        <div class="col" style="flex: 1 1 320px;">
-          <span class="tag">序列</span>
+      <div class="deep-input">
+        <div class="field" style="flex: 1 1 340px;">
+          <label>序列</label>
           <textarea
             id="deep-seq"
             v-model="sequence"
+            spellcheck="false"
             placeholder="粘贴 RNA 序列，例如 GGGAAACCC…"
-            style="min-height: 84px;"
+            style="min-height: 88px;"
           ></textarea>
         </div>
-        <div class="col" style="flex: 0 0 220px;">
-          <span class="tag">预置示例</span>
+        <div class="field" style="flex: 0 1 220px;">
+          <label>预置示例</label>
           <select v-model="selectedExample" @change="loadExample">
             <option value="">选择示例…</option>
             <option v-for="ex in examples" :key="ex.id" :value="ex.id">{{ ex.name }}</option>
           </select>
+          <div class="hint">{{ seqLen }} nt · 逐位置嵌入</div>
         </div>
       </div>
 
-      <div class="hint">{{ seqLen }} nt</div>
-
       <div class="actions">
         <button :disabled="loading || !seqLen || seqLen > limit" @click="computeEmbed">
+          <span v-if="loading" class="spinner spinner--light"></span>
           {{ loading ? '计算中…' : '计算逐位置嵌入' }}
         </button>
         <button v-if="loading" class="secondary" @click="cancelJob">取消任务</button>
+        <span v-if="engineNote" class="hint" style="margin: 0;">{{ engineNote }}</span>
       </div>
 
       <div v-if="loading" class="progress"><div :style="{ width: (progress * 100) + '%' }"></div></div>
       <p v-if="stageHint" class="hint">{{ stageHint }}</p>
       <p v-else-if="queueHint" class="hint">{{ queueHint }}</p>
-      <p v-if="engineNote" class="hint">{{ engineNote }}</p>
       <p v-if="error" class="error">{{ error }}</p>
 
-      <div v-if="embed" class="row stats">
-        <div class="col"><span class="tag">嵌入维度</span><br />{{ embed.dim }}</div>
-        <div class="col"><span class="tag">位点数</span><br />{{ embed.length }}</div>
-        <div class="col"><span class="tag">模型</span><br />{{ embed.model }}</div>
-        <div class="col"><span class="tag">结果来源</span><br />{{ embed.source === 'cache' ? '缓存' : '实时计算' }}</div>
-        <div class="col" style="flex: 0 0 auto;">
+      <div v-if="embed" class="metric-grid" style="margin-top: 18px;">
+        <div class="metric">
+          <span class="metric-label">嵌入维度</span>
+          <div class="metric-value">{{ embed.dim }}<small>dim</small></div>
+        </div>
+        <div class="metric">
+          <span class="metric-label">位点数</span>
+          <div class="metric-value">{{ embed.length }}<small>nt</small></div>
+        </div>
+        <div class="metric">
+          <span class="metric-label">模型</span>
+          <div class="metric-value" style="font-size: 0.9rem;">{{ embed.model }}</div>
+        </div>
+        <div class="metric">
+          <span class="metric-label">结果来源</span>
+          <div class="metric-value" style="font-size: 0.9rem;">{{ embed.source === 'cache' ? '缓存命中' : '实时计算' }}</div>
+        </div>
+        <div class="metric metric--action">
           <button class="secondary" @click="exportEmbed">导出嵌入 JSON</button>
         </div>
       </div>
-      <p v-if="embed && embed.fallback_reason" class="hint">
-        降级原因：{{ embed.fallback_reason }}。安装 torch + transformers 并将权重放到
-        <span class="mono">models/rnafm/</span> 后重启即可启用真实 RNA-FM。
-      </p>
-    </div>
+      <details v-if="embed && embed.fallback_reason" class="fallback-note">
+        <summary>当前使用降级嵌入 · 查看原因与启用方法</summary>
+        <p>{{ embed.fallback_reason }}</p>
+        <p>
+          安装 torch + transformers 并将权重放到 <span class="mono">models/rnafm/</span> 后重启，
+          即可启用真实 RNA-FM 640 维嵌入。
+        </p>
+      </details>
+    </section>
 
-    <div v-if="embed" class="card">
-      <h2>嵌入空间轨迹（前两主成分）</h2>
-      <div ref="pcaEl" style="width: 100%; height: 360px;"></div>
-      <p class="hint">点按轨迹顺序对应 5' → 3'，相邻位点距离反映嵌入的局部连续性。</p>
-    </div>
+    <section v-if="embed" class="card">
+      <div class="card-head">
+        <div>
+          <h2>嵌入空间轨迹</h2>
+          <p class="hint" style="margin: 2px 0 0;">前两主成分投影，点序对应 5' → 3'。</p>
+        </div>
+        <span class="tag">PCA 2D</span>
+      </div>
+      <div ref="pcaEl" class="chart-box" style="height: 360px;"></div>
+      <p class="hint">相邻位点在轨迹上的距离，反映嵌入的局部连续性。</p>
+    </section>
 
-    <div v-if="embed" class="card">
-      <h2>逐位置嵌入强度</h2>
-      <div ref="normEl" style="width: 100%; height: 260px;"></div>
-    </div>
+    <section v-if="embed" class="card">
+      <div class="card-head">
+        <div>
+          <h2>逐位置嵌入强度</h2>
+          <p class="hint" style="margin: 2px 0 0;">每个位点嵌入向量的 L2 范数。</p>
+        </div>
+        <span class="tag">L2 norm</span>
+      </div>
+      <div ref="normEl" class="chart-box" style="height: 260px;"></div>
+    </section>
 
-    <div class="card">
-      <h2>突变嵌入偏移</h2>
-      <div class="row" style="align-items: flex-end;">
-        <div class="col" style="flex: 0 0 120px;">
-          <span class="tag">位点</span>
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <h2>突变嵌入偏移</h2>
+          <p class="hint" style="margin: 2px 0 0;">比较野生型与突变型的逐位置表征差异。</p>
+        </div>
+        <span class="tag tag--brand">L2 shift</span>
+      </div>
+
+      <div class="mut-controls">
+        <div class="field" style="flex: 0 0 120px;">
+          <label>位点</label>
           <input v-model.number="position" type="number" min="1" :max="seqLen || 1" />
         </div>
-        <div class="col" style="flex: 0 0 120px;">
-          <span class="tag">突变碱基</span>
+        <div class="field" style="flex: 0 0 110px;">
+          <label>突变碱基</label>
           <select v-model="base">
             <option v-for="b in ['A', 'U', 'C', 'G']" :key="b" :value="b">{{ b }}</option>
           </select>
         </div>
-        <div class="col"><span class="tag">参考碱基</span><br /><span class="mono">{{ currentBase || '—' }}</span></div>
-        <div class="col" style="flex: 0 0 auto;">
+        <div class="field" style="flex: 0 0 120px;">
+          <label>参考碱基</label>
+          <div class="ref-base mono">{{ currentBase || '—' }}</div>
+        </div>
+        <div class="mut-run">
           <button class="secondary" :disabled="loading || !seqLen" @click="computeMutate">计算偏移</button>
-          <button v-if="loading" class="secondary" style="margin-left: 6px;" @click="cancelJob">取消</button>
+          <button v-if="loading" class="quiet" @click="cancelJob">取消</button>
         </div>
       </div>
 
-      <div v-if="loading" class="progress" style="margin-top: 12px;"><div :style="{ width: (progress * 100) + '%' }"></div></div>
+      <div v-if="loading" class="progress" style="margin-top: 14px;"><div :style="{ width: (progress * 100) + '%' }"></div></div>
       <p v-if="queueHint && loading" class="hint">{{ queueHint }}</p>
       <p v-if="error" class="error">{{ error }}</p>
 
-      <div v-if="mut" class="row stats">
-        <div class="col"><span class="tag">平均偏移</span><br />{{ mut.mean_shift }}</div>
-        <div class="col"><span class="tag">最大偏移位点</span><br />{{ mut.max_shift_position }}（{{ mut.max_shift }}）</div>
-        <div class="col"><span class="tag">受影响 Top5</span><br />{{ mut.top_positions.join(', ') }}</div>
-        <div class="col"><span class="tag">嵌入维度</span><br />{{ mut.dim }}</div>
-        <div class="col" style="flex: 0 0 auto;">
+      <div v-if="mut" class="metric-grid" style="margin-top: 16px;">
+        <div class="metric">
+          <span class="metric-label">平均偏移</span>
+          <div class="metric-value">{{ mut.mean_shift }}</div>
+        </div>
+        <div class="metric">
+          <span class="metric-label">最大偏移位点</span>
+          <div class="metric-value">{{ mut.max_shift_position }}<small>· {{ mut.max_shift }}</small></div>
+        </div>
+        <div class="metric">
+          <span class="metric-label">受影响 Top5</span>
+          <div class="metric-value" style="font-size: 0.9rem;">{{ mut.top_positions.join(', ') }}</div>
+        </div>
+        <div class="metric">
+          <span class="metric-label">嵌入维度</span>
+          <div class="metric-value">{{ mut.dim }}<small>dim</small></div>
+        </div>
+        <div class="metric metric--action">
           <button class="secondary" @click="exportMut">导出偏移 JSON</button>
         </div>
       </div>
 
       <template v-if="mut">
-        <h3 style="margin-top: 18px;">逐位置嵌入偏移</h3>
-        <div ref="shiftEl" style="width: 100%; height: 280px;"></div>
+        <h3 class="chart-title">逐位置嵌入偏移</h3>
+        <div ref="shiftEl" class="chart-box" style="height: 280px;"></div>
 
-        <h3 style="margin-top: 18px;">野生型 / 突变型嵌入空间对比</h3>
-        <div ref="mutPcaEl" style="width: 100%; height: 340px;"></div>
+        <h3 class="chart-title">野生型 / 突变型嵌入空间对比</h3>
+        <div ref="mutPcaEl" class="chart-box" style="height: 340px;"></div>
 
-        <p class="hint mono" style="margin-top: 10px;">WT: {{ mut.structure_wt }}</p>
-        <p class="hint mono">MT: {{ mut.structure_mt }}</p>
+        <div class="struct-pair">
+          <div>
+            <span class="tag tag--teal">WT</span>
+            <div class="seq-block" style="margin-top: 6px;">{{ mut.structure_wt }}</div>
+          </div>
+          <div>
+            <span class="tag tag--rose">MT</span>
+            <div class="seq-block" style="margin-top: 6px;">{{ mut.structure_mt }}</div>
+          </div>
+        </div>
       </template>
-    </div>
+    </section>
   </div>
 </template>
 
 <style scoped>
-.actions { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
-.stats { margin-top: 14px; gap: 16px; }
-.progress {
-  height: 6px;
-  margin-top: 10px;
-  background: var(--panel-2);
+.deep-input {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: 3px;
-  overflow: hidden;
 }
-.progress > div { height: 100%; background: var(--accent); transition: width 0.2s linear; }
-textarea { min-height: 72px; }
+.deep-input textarea { background: #fff; }
+
+.actions { display: flex; gap: 10px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+
+.metric--action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border-style: dashed;
+}
+.metric--action button { width: 100%; }
+
+.chart-box {
+  width: 100%;
+  border-radius: var(--radius);
+  background:
+    linear-gradient(180deg, rgba(99, 102, 241, 0.035), transparent 45%),
+    #fff;
+  border: 1px solid var(--border);
+  padding: 6px 4px 2px;
+}
+.chart-title { margin: 20px 0 10px; font-size: 0.92rem; }
+
+.mut-controls { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap; }
+.mut-run { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.ref-base {
+  display: flex;
+  align-items: center;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+.struct-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+.struct-pair .seq-block { max-height: 120px; }
+
+.spinner--light { border-color: rgba(255, 255, 255, 0.4); border-top-color: #fff; }
+
+.fallback-note {
+  margin-top: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.fallback-note summary {
+  cursor: pointer;
+  font-weight: 560;
+  color: var(--text-2);
+  list-style: none;
+}
+.fallback-note summary::-webkit-details-marker { display: none; }
+.fallback-note summary::before {
+  content: "＋";
+  display: inline-block;
+  width: 14px;
+  color: var(--brand);
+  font-weight: 700;
+}
+.fallback-note[open] summary::before { content: "－"; }
+.fallback-note p { margin: 8px 0 0; line-height: 1.6; word-break: break-word; }
+
+@media (max-width: 700px) {
+  .struct-pair { grid-template-columns: 1fr; }
+  .mut-run { margin-left: 0; }
+}
 </style>

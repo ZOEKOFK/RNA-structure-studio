@@ -16,6 +16,7 @@ from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -64,6 +65,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 配对概率矩阵等大响应（300nt 约 365KB）gzip 后只有几 KB，传输量省 98%+
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 _RNACOMPOSER_MAX_LEN = composer_api.RNACOMPOSER_MAX_LEN   # RNAComposer 官方交互模式限长（500 nt）
 
@@ -466,6 +470,7 @@ def model3d(req: Model3DRequest):
         "status": "queued",
         "structure": structure,
         "engine": rna3d.engine_detail()["engine_3d"],
+        "note": rna3d.pseudoknot_note(structure),
     }
 
 

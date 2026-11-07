@@ -27,12 +27,36 @@ function loadForna() {
   return mod
 }
 
+// fornac 在运行时会向 document.head 注入一份全局样式表，其中
+// `svg { display:block; width:100%; min-width:100%; min-height:100% }`
+// 会把页面上所有内联图标（按钮、徽标里的 svg）撑满容器宽度，导致文字被挤出按钮边框。
+// 这里把这份样式表的每条选择器都收进 .forna-wrap 作用域，既保留圈图自身样式，
+// 又不影响页面其他 svg。
+function scopeFornaStyles() {
+  for (const el of document.querySelectorAll('style')) {
+    if (el.dataset.fornaScoped) continue
+    const css = el.textContent || ''
+    if (!css.includes('min-width: 100%') || !css.includes('circle.node')) continue
+    el.textContent = css.replace(/(^|\})\s*([^{}@]+?)\s*\{/g, (m, brace, sel) => {
+      const scoped = sel
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((s) => `.forna-wrap ${s}`)
+        .join(', ')
+      return `${brace}${scoped}{`
+    })
+    el.dataset.fornaScoped = '1'
+  }
+}
+
 async function render() {
   if (!host.value || !props.sequence || !props.structure) return
   ready.value = false
   await nextTick()
   try {
     const mod = loadForna()
+    scopeFornaStyles()
     const FornaContainer = mod.FornaContainer
     if (typeof FornaContainer !== 'function') throw new Error('fornac 未导出 FornaContainer')
 
@@ -45,6 +69,7 @@ async function render() {
       initialSize: [Math.max(host.value.clientWidth, 320), props.height],
     })
     container.addRNA(props.structure, { structure: props.structure, sequence: props.sequence })
+    scopeFornaStyles()
     if (typeof container.setSize === 'function') container.setSize()
     ready.value = true
   } catch (e) {
@@ -63,22 +88,50 @@ onBeforeUnmount(() => {
 <template>
   <div class="forna-wrap">
     <div ref="host" :style="{ width: '100%', height: height + 'px' }"></div>
-    <p v-if="!ready" class="hint">圈图加载中…</p>
+    <div v-if="!ready" class="forna-loading">
+      <span class="spinner"></span> 圈图渲染中…
+    </div>
   </div>
 </template>
 
 <style scoped>
 .forna-wrap {
   position: relative;
-  border: 1px solid #24324a;
-  border-radius: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 14px);
   overflow: hidden;
-  background: #0f1726;
+  background:
+    radial-gradient(80% 70% at 50% 0%, rgba(99, 102, 241, 0.05), transparent 70%),
+    #fff;
 }
 .forna-wrap :deep(svg) {
   cursor: grab;
 }
-.forna-wrap :deep(.base) {
-  font-family: monospace;
+.forna-wrap :deep(svg:active) {
+  cursor: grabbing;
+}
+.forna-wrap :deep(circle.node) {
+  stroke: rgba(13, 27, 47, 0.18);
+  stroke-width: 1;
+}
+.forna-wrap :deep(circle.node.label) {
+  fill: #f8fafc !important;
+  stroke: #cbd5e1 !important;
+  stroke-width: 1 !important;
+}
+.forna-wrap :deep(text) {
+  font-family: var(--mono);
+  font-weight: 600;
+}
+.forna-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--muted);
+  background: #fff;
 }
 </style>

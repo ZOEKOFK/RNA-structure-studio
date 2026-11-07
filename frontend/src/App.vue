@@ -41,63 +41,60 @@ onBeforeUnmount(() => {
 
 <template>
   <header class="nav">
-    <span class="brand">🧬 RNA 结构预测分析平台</span>
-    <router-link to="/">首页</router-link>
-    <router-link to="/fold">折叠视图</router-link>
-    <router-link to="/mutate">突变对比</router-link>
-    <router-link to="/deep">深度分析</router-link>
-    <router-link to="/tertiary">3D 结构</router-link>
-    <span style="margin-left: auto;" class="engine-pill" :class="{ off: !ok }">
+    <router-link to="/" class="brand">
+      <span class="brand-mark">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+          <path d="M7 3c0 4.5 10 4.5 10 9s-10 4.5-10 9" />
+          <path d="M17 3c0 4.5-10 4.5-10 9s10 4.5 10 9" />
+          <path d="M8.4 7.4h7.2M8.4 16.6h7.2M9.6 12h4.8" />
+        </svg>
+      </span>
+      <span class="brand-text">RNA Fold Lab</span>
+      <span class="brand-sub">结构预测分析平台</span>
+    </router-link>
+
+    <nav class="nav-links">
+      <router-link to="/" class="nav-link">首页</router-link>
+      <router-link to="/fold" class="nav-link">折叠视图</router-link>
+      <router-link to="/mutate" class="nav-link">突变对比</router-link>
+      <router-link to="/deep" class="nav-link">深度分析</router-link>
+      <router-link to="/tertiary" class="nav-link">3D 结构</router-link>
+    </nav>
+
+    <span class="engine-pill" :class="{ off: !ok }" style="margin-left: auto;">
       <span class="dot"></span>
-      {{ engine }}<span v-if="version"> {{ version }}</span>
-      <span class="sep">|</span>
-      {{ deep }}
+      <span class="engine-name">{{ engine }}</span>
+      <span v-if="version">{{ version }}</span>
+      <span class="sep">/</span>
+      <span>{{ deep }}</span>
     </span>
   </header>
 
+  <router-view v-slot="{ Component, route }">
+    <transition name="route" mode="out-in">
+      <component :is="Component" :key="route.path" />
+    </transition>
+  </router-view>
+
+  <footer class="footer">
+    <div>RNA Fold Lab · 本地推理，序列不出内网</div>
+    <div class="footer-links">
+      <span>ViennaRNA</span>
+      <span>RNA-FM</span>
+      <span>forna</span>
+      <span>Mol*</span>
+      <span>ECharts</span>
+    </div>
+  </footer>
+
   <div v-if="toast" class="toast" @click="toast = ''">
-    {{ toast }}
+    <span class="toast-icon">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 8v4.5M12 16h.01" />
+      </svg>
+    </span>
+    <span>{{ toast }}</span>
     <span class="toast-close">×</span>
   </div>
-
-  <router-view />
 </template>
-
-<style scoped>
-.engine-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.82rem;
-  color: var(--muted);
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 4px 12px;
-}
-.engine-pill .dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-}
-.engine-pill.off .dot { background: var(--red); }
-.engine-pill .sep { opacity: 0.45; }
-
-.toast {
-  position: fixed;
-  right: 20px;
-  bottom: 20px;
-  z-index: 100;
-  max-width: 360px;
-  background: #3a1f24;
-  border: 1px solid var(--red);
-  color: var(--text);
-  border-radius: 8px;
-  padding: 10px 14px;
-  font-size: 0.88rem;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
-  cursor: pointer;
-}
-.toast-close { margin-left: 10px; color: var(--muted); }
-</style>
