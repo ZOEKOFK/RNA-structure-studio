@@ -1,8 +1,9 @@
 # RNA 结构预测分析平台 · 技术文档
 
-> 版本：v0.1.0 ｜ 对应提交：`4468898` ｜ 最后更新：2026-11-10
+> 版本：v0.1.0 ｜ 代码提交：`4468898` ｜ 文档提交：`2085279` ｜ 最后更新：2026-11-13
 > 本文面向三类读者：**评审**（想知道系统到底怎么工作、哪些结论可信）、**接手者**（要改代码）、**复现者**（要跑起来并验证）。
 > 与 `README.md` 的分工：README 是"怎么用"，本文是"为什么这么设计、怎么实现、边界在哪"。
+> 线上实例：<https://rna-structure-studio.app.workbuddy.host/?sharecode=H6MR5HLIVE>（部署形态见 §9.3）
 
 ---
 
@@ -61,7 +62,7 @@
 | `frontend/src/` | 5 页面 + 4 组件 | 3702 | 懒加载、forna 样式作用域隔离、Mol* 动态导入 |
 | `tests/` | 后端测试 | 908 | 72 项，不联网、不加载真实权重 |
 
-代码规模：后端 2221 行 / 前端 3702 行 / 测试 908 行；仓库跟踪 55 个文件、约 2.8 MB（含 PDB 坐标与 LICENSE）。
+代码规模：后端 2221 行 / 前端 3702 行 / 测试 908 行；仓库跟踪 57 个文件、约 2.9 MB（含 PDB 坐标与 LICENSE）。
 
 ---
 
@@ -379,14 +380,14 @@ POST /api/3d/predict {sequence, structure?}
 3. **Rfam 注释静态维护**：只覆盖 5 条真实分子，不联网查询。
 4. **RCSB 依赖外网**：不可达时降级为手动桥接，不影响其他功能。
 5. **单进程**：任务表、限流、检索缓存都在内存，重启即丢；`--workers>1` 直接拒绝启动。
-6. **无鉴权**：定位是单机/内网工具，公网部署需自行加反代与鉴权。
+6. **无鉴权**：定位是单机/内网工具，公网部署需自行加反代与鉴权。线上演示实例的访问控制由托管平台的分享链接提供（首次带 `?sharecode=` 种 cookie），**不是应用自身的账号体系**。
 7. **缓存量化**：嵌入向量写入时四舍五入到 3 位，首次与缓存命中的 PCA 存在 1e-3 级差异。
 
 ---
 
 ## 9. 部署与复现
 
-### 9.1 三种启动方式
+### 9.1 四种启动方式
 
 ```bash
 # ① 一键（Windows 双击 run.bat）
@@ -398,6 +399,8 @@ cd frontend && npm run dev        # 5173，/api 代理到 8000
 
 # ③ 容器（API + 静态页面单容器）
 docker compose up --build -d
+
+# ④ 托管沙箱（线上演示形态：安装阶段建前端 + 读 PORT 启动，详见 §9.3）
 ```
 
 `run.sh` 的四个阶段都是幂等的：`.venv` 已存在则复用，`frontend/dist/index.html` 已存在则跳过构建（删掉 `frontend/dist` 即可强制重建）。ViennaRNA 安装失败不会中断流程，只会降级。
@@ -410,7 +413,36 @@ docker compose up --build -d
 - `stop_grace_period: 30s` + lifespan 取消任务，保证长任务不被硬切。
 - `GIT_COMMIT=$(git rev-parse --short HEAD) docker compose build` 把提交写进 OCI `LABEL`，便于追溯镜像对应的代码版本。
 
-### 9.3 复现校验步骤（评审可直接执行）
+### 9.3 托管部署（在线演示实例）
+
+线上实例跑在托管沙箱里：只给一个公网端口、单进程、无持久盘。与容器部署的差异只有三处，但每一处都会直接导致启动失败，照抄 compose 是不行的：
+
+| 差异点 | 容器里的做法 | 托管沙箱里必须改成 |
+|---|---|---|
+| 前端产物 | Dockerfile 多阶段构建，把 `dist` 拷进镜像 | 源码上传会剔除 `dist/`（构建产物），需在安装阶段执行 `cd frontend && npm ci && npm run build` |
+| 端口 | `CMD ... --port 8000` 写死 | 读平台注入的 `PORT`；`${PORT}` 在部分运行器里不展开，交给 Python 读环境变量 |
+| 进程数 | `--workers 1` | 不变。任务表 / 限流 / 检索缓存是进程内状态，多进程启动即报错 |
+
+启动命令：
+
+```bash
+python -c "import os,uvicorn;uvicorn.run('backend.main:app',host='0.0.0.0',port=int(os.environ.get('PORT','8000')),workers=1)"
+```
+
+线上实测（2026-11-13，远端请求，非本机）：
+
+| 检查 | 结果 |
+|---|---|
+| `/api/health` | `engine=viennarna-python`、`viennarna_version=2.7.0`、`deep_max_len=300`、`model_3d_max_len=500` |
+| `/api/fold` tRNA 76 nt | `mfe=-22.4`、`num_pairs=21`，dot-bracket 与本地逐字符一致 |
+| `/api/pairprob` 9 nt | `engine=viennarna-bpp`（配分函数，非采样） |
+| `/api/3d/predict` 76 nt | `engine=builtin`、`atoms=456`，秒级返回 |
+| 前端路由 | `/`、`/fold`、`/mutate`、`/deep`、`/tertiary` 均 200（SPA 回退生效） |
+| 深度层 | 预置示例命中随包上传的 `data/cache`（`source=cache`，640 维真实向量）；新序列因实例未装 torch / transformers 而失败，降级为 34 维确定性嵌入 |
+
+> 沙箱无持久盘：缓存随实例重启清空，与 §8.2 第 5 条「重启即丢」是同一件事，不是额外退化。演示前建议先点一遍示例热身。
+
+### 9.4 复现校验步骤（评审可直接执行）
 
 ```bash
 python -m pytest tests -q                 # 期望 72 passed，约 2 s

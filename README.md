@@ -4,6 +4,10 @@
 
 基于 ViennaRNA（真实热力学能量模型）+ RNA-FM（逐位置嵌入）+ Vue3/Vite，前后端一体，**一条命令即可在本地跑起来**。
 
+> **在线演示**：<https://rna-structure-studio.app.workbuddy.host/?sharecode=H6MR5HLIVE>
+>
+> 托管实例（单容器、单进程），引擎为真实 ViennaRNA 2.7.0。深度分析对 9 条预置示例命中预计算缓存（640 维真实向量）；实例未装 torch，输入新序列会降级为 34 维确定性嵌入（页面标注来源）。要完整深度层或长期对外服务，请按下方「手动安装 / Docker 部署」自建。
+
 ![首页](docs/screenshots/home.png)
 
 ---
@@ -276,6 +280,17 @@ docker compose up -d
 - **单进程约束**：任务表 / 限流窗口 / RCSB 缓存都在进程内存，容器固定 `--workers 1`；
 - **镜像追溯**：`GIT_COMMIT=$(git rev-parse --short HEAD) docker compose build` 把 commit 写进 OCI `LABEL`。
 
+### 托管平台部署要点
+
+在线演示跑在托管沙箱里（只给一个公网端口、单进程），与 Docker 有三处差异，照抄 compose 会失败：
+
+1. **静态产物要现场构建**：`frontend/dist` 是构建产物，不会随源码上传，安装阶段需执行 `cd frontend && npm ci && npm run build`；
+2. **端口不能写死**：启动命令必须读平台注入的 `PORT`，且 `${PORT}` 在部分运行器里不展开，建议交给 Python 读：
+   ```bash
+   python -c "import os,uvicorn;uvicorn.run('backend.main:app',host='0.0.0.0',port=int(os.environ.get('PORT','8000')),workers=1)"
+   ```
+3. **仍然是 `workers=1`**：任务表、限流窗口、RCSB 缓存都在进程内存，多进程会启动即报错。
+
 ---
 
 ## 常见问题
@@ -351,6 +366,7 @@ python scripts/prewarm.py --skip-deep  # 只预热折叠与 PDB（无 torch 时�
 
 ## 已知边界
 
+- **在线演示是托管实例，不是生产服务**：单进程、无持久盘（重启即丢缓存）、无账号鉴权（保护只靠链接里的 sharecode）；适合评审点开看，不适合长期对外。
 - **RNAComposer 无法自动提交**：官方没有公开 REST API，也没有 API key。本站生成可粘贴的输入文本，真实途径是到官网手动提交、等邮件回传 PDB，再回本站用 Mol\* 查看。
 - **本地 3D 建模是拓扑预览级**：想要原子级精度请接 RhoFold+ / SimRNA（用 `RNA_3D_CMD`）或 RNAComposer。SimRNA 仅学术许可且禁止再分发；RhoFold+ 官方环境锁 Python 3.7 / torch 1.10，建议独立容器接入。
 - **Rfam 注释随示例库静态维护**：目前只覆盖 5 个预置真实分子，不联网查询。
