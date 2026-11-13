@@ -42,7 +42,7 @@
 |---|---|
 | 机器 | AMD Ryzen 7 7735H（8C/16T），15.2 GB RAM |
 | 系统 | Windows 11 家庭版（10.0.26100） |
-| Python | 3.9.13（`C:/Users/ZOE/AppData/Local/Programs/Python/Python39/python.exe`） |
+| Python | 3.9.13（官方 64 位安装包，虚拟环境运行） |
 | 二级结构引擎 | ViennaRNA 2.7.0（PyPI wheel，Python 绑定） |
 | 深度层 | torch 2.5.1+cpu / transformers 4.46.3 / multimolecule 0.0.8，权重本地 398 MB |
 | 前端 | Node 22.22.2 / Vite 5 / Vue 3 |
@@ -460,7 +460,7 @@ RCSB 5S rRNA: 3699ms hits=5 ; cached 0.0ms
 
 ```bash
 # 环境（必须有 ViennaRNA + torch，否则数字会变）
-"C:/Users/ZOE/AppData/Local/Programs/Python/Python39/python.exe" -m pytest tests -q
+python -m pytest tests -q
 cd frontend && npm test
 
 # 性能
